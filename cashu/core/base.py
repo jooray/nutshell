@@ -553,6 +553,42 @@ class Unit(Enum):
     btc = 4
     auth = 999
 
+    @classmethod
+    def _missing_(cls, value):
+        """Handle dynamic unit creation from settings"""
+        if isinstance(value, str):
+            value_lower = value.lower()
+            if value_lower in [u.lower() for u in settings.mint_units]:
+                existing_values = {member.value for member in cls}
+
+                next_id = 0
+                while next_id in existing_values:
+                    next_id += 1
+
+                new_member = object.__new__(cls)
+                new_member._name_ = value_lower
+                new_member._value_ = next_id
+                return cls._value2member_map_.setdefault(next_id, new_member)
+        return None
+
+    @property
+    def decimals(self) -> int:
+        """Get the number of decimal places for this unit."""
+        if self == Unit.sat:
+            return 0
+        elif self == Unit.msat:
+            return 0
+        elif self == Unit.usd:
+            return 2
+        elif self == Unit.eur:
+            return 2
+        elif self == Unit.btc:
+            return 8
+        elif self == Unit.auth:
+            return 0
+        else:
+            return settings.mint_unit_decimals.get(self.name, 2)
+
     def str(self, amount: int | float) -> str:
         if self == Unit.sat:
             return f"{amount} sat"
@@ -567,7 +603,15 @@ class Unit(Enum):
         elif self == Unit.auth:
             return f"{amount} AUTH"
         else:
-            raise Exception("Invalid unit")
+            unit_name = self.name
+            if unit_name not in [u.lower() for u in settings.mint_units]:
+                raise Exception("Invalid unit")
+
+            decimals = settings.mint_unit_decimals.get(unit_name, 2)
+            if decimals > 0:
+                divisor = 10 ** decimals
+                return f"{amount/divisor:.{decimals}f} {unit_name.upper()}"
+            return f"{amount} {unit_name.upper()}"
 
     def __str__(self):
         return self.name

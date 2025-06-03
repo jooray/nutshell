@@ -1,10 +1,10 @@
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from environs import Env  # type: ignore
-from pydantic import BaseSettings, Extra, Field
+from pydantic import BaseSettings, Extra, Field, field_validator
 
 env = Env()
 
@@ -70,6 +70,57 @@ class MintSettings(CashuSettings):
         title="Regular tasks interval",
         description="Interval (in seconds) for running regular tasks like the invoice checker.",
     )
+
+    # Custom units configuration
+    mint_units: List[str] = Field(default=["sat"], env="MINT_UNITS")
+    mint_unit_decimals: Dict[str, int] = Field(default_factory=dict)
+
+    # Fiat backend configuration
+    mint_fiat_backend_units: List[str] = Field(default=[], env="MINT_FIAT_BACKEND_UNITS")
+    mint_fiat_bolt11_backend: Optional[str] = Field(default=None, env="MINT_FIAT_BOLT11_BACKEND")
+
+    # Fiat backend fees (in percent)
+    fiat_backend_mint_fee: Dict[str, float] = Field(default_factory=dict)
+    fiat_backend_melt_fee: Dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("mint_unit_decimals", mode="before")
+    @classmethod
+    def parse_unit_decimals(cls, v):
+        if isinstance(v, dict):
+            return v
+        # Parse from environment variables like MINT_UNIT_DECIMALS_CZK=2
+        result = {}
+        for key, value in env_settings().items():
+            if key.startswith("MINT_UNIT_DECIMALS_"):
+                unit = key.replace("MINT_UNIT_DECIMALS_", "").lower()
+                result[unit] = int(value)
+        return result
+
+    @field_validator("fiat_backend_mint_fee", mode="before")
+    @classmethod
+    def parse_fiat_mint_fees(cls, v):
+        if isinstance(v, dict):
+            return v
+        # Parse from environment variables like FIAT_BACKEND_MINT_FEE_USD=1.0
+        result = {}
+        for key, value in env_settings().items():
+            if key.startswith("FIAT_BACKEND_MINT_FEE_"):
+                unit = key.replace("FIAT_BACKEND_MINT_FEE_", "").lower()
+                result[unit] = float(value)
+        return result
+
+    @field_validator("fiat_backend_melt_fee", mode="before")
+    @classmethod
+    def parse_fiat_melt_fees(cls, v):
+        if isinstance(v, dict):
+            return v
+        # Parse from environment variables like FIAT_BACKEND_MELT_FEE_USD=1.0
+        result = {}
+        for key, value in env_settings().items():
+            if key.startswith("FIAT_BACKEND_MELT_FEE_"):
+                unit = key.replace("FIAT_BACKEND_MELT_FEE_", "").lower()
+                result[unit] = float(value)
+        return result
 
 
 class MintWatchdogSettings(MintSettings):

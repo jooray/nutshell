@@ -12,6 +12,7 @@ from ..core.db import Database
 from ..core.migrations import migrate_databases
 from ..core.settings import settings
 from ..lightning.base import LightningBackend
+from ..lightning.fiatbackend import FiatBackend
 from ..mint import migrations as mint_migrations
 from ..mint.auth import migrations as auth_migrations
 from ..mint.auth.server import AuthLedger

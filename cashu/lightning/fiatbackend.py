@@ -9,7 +9,7 @@ from loguru import logger
 
 from cashu.core.base import Amount, MeltQuote, Unit
 from cashu.core.models import PostMeltQuoteRequest
-from cashu.core.settings import env, FIAT_BACKEND_UNIT_CODES
+from cashu.core.settings import settings
 from cashu.helpers.units import UNIT_SET, DECIMALS
 from .base import (
     InvoiceResponse,
@@ -52,9 +52,9 @@ class FiatBackend(LightningBackend):
 
         # ─── Which units does THIS backend cover? ───────────────────────
         fiat_units = {
-            getattr(Unit, c.lower())
-            for c in FIAT_BACKEND_UNIT_CODES
-            if getattr(Unit, c.lower(), None) is not None
+            Unit[c.lower()]
+            for c in settings.mint_fiat_backend_units
+            if c.lower() in [u.name for u in UNIT_SET]
         }
         if not fiat_units:
             raise Unsupported("FIAT_BACKEND_UNITS empty or unknown codes")
@@ -66,11 +66,11 @@ class FiatBackend(LightningBackend):
         self._decimals = {u: DECIMALS[u] for u in self._fiat_units}
 
         self._mint_fee = {
-            u: env.float(f"FIAT_BACKEND_MINT_FEE_{u.name.upper()}", default=0.0)
+            u: settings.fiat_backend_mint_fee.get(u.name, 0.0)
             for u in self._fiat_units
         }
         self._melt_fee = {
-            u: env.float(f"FIAT_BACKEND_MELT_FEE_{u.name.upper()}", default=0.0)
+            u: settings.fiat_backend_melt_fee.get(u.name, 0.0)
             for u in self._fiat_units
         }
 
@@ -156,6 +156,10 @@ class FiatBackend(LightningBackend):
         )
 
     async def pay_invoice(self, quote: MeltQuote, fee_limit_msat: int, **kwargs) -> PaymentResponse:
+        if quote.unit in self._fiat_units:
+            fee_limit_sat = await self._fiat_to_sat(Amount(quote.unit, fee_limit_msat // 1000))
+            fee_limit_msat = fee_limit_sat * 1000
+
         return await self.ln.pay_invoice(quote, fee_limit_msat, **kwargs)
 
     async def pay_invoice_with_quote(self, quote: MeltQuote, **kwargs) -> PaymentResult:
@@ -176,7 +180,7 @@ class FiatBackend(LightningBackend):
 
     async def get_payment_quote(self, melt_quote: PostMeltQuoteRequest) -> PaymentQuoteResponse:
         ln_quote = await self.ln.get_payment_quote(melt_quote)
-        unit = getattr(melt_quote, "unit", Unit.sat)
+        unit = melt_quote.unit or Unit.sat
 
         if unit not in self._fiat_units:
             return ln_quote
@@ -187,7 +191,7 @@ class FiatBackend(LightningBackend):
 
         return PaymentQuoteResponse(
             ok=ln_quote.ok,
-            unit=unit,
+            checking_id=ln_quote.checking_id,
             amount=Amount(unit, gross),
             fee=fee,
         )
