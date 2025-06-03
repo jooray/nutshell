@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 from cashu.core.base import Unit, Amount
 from cashu.core.models import PostMeltQuoteRequest
 from cashu.lightning.fiatbackend import FiatBackend
@@ -47,68 +47,39 @@ def mock_settings():
         yield mock
 
 
-@pytest.fixture
-def mock_unit_set():
-    with patch('cashu.lightning.fiatbackend.UNIT_SET', {Unit.sat, Unit.usd, Unit.eur}):
-        with patch('cashu.lightning.fiatbackend.DECIMALS', {
-            Unit.sat: 0, Unit.usd: 2, Unit.eur: 2
-        }):
-            # Mock Unit enum to support CZK
-            with patch.object(Unit, '__members__', {
-                'sat': Unit.sat,
-                'usd': Unit.usd,
-                'eur': Unit.eur,
-                'czk': Mock(name='czk', value=4)
-            }):
-                yield
-
-
 @pytest.mark.asyncio
-async def test_fiat_backend_init(mock_settings, mock_unit_set):
+async def test_fiat_backend_init(mock_settings):
     """Test FiatBackend initialization"""
     mock_backend = MockLightningBackend(Unit.sat)
 
-    # Add CZK to the mock
-    czk_unit = Mock()
-    czk_unit.name = 'czk'
-    with patch('cashu.lightning.fiatbackend.Unit.__getitem__', side_effect=lambda x: {
-        'usd': Unit.usd, 'eur': Unit.eur, 'czk': czk_unit
-    }.get(x)):
-        with patch('cashu.lightning.fiatbackend.DECIMALS', {
-            Unit.usd: 2, Unit.eur: 2, czk_unit: 2
-        }):
-            fiat_backend = FiatBackend(mock_backend)
+    fiat_backend = FiatBackend(mock_backend)
 
-            assert Unit.sat in fiat_backend.supported_units
-            assert Unit.usd in fiat_backend.supported_units
-            assert Unit.eur in fiat_backend.supported_units
-
-            assert fiat_backend._mint_fee[Unit.usd] == 1.0
-            assert fiat_backend._mint_fee[Unit.eur] == 1.0
-            assert fiat_backend._melt_fee[Unit.usd] == 1.0
-            assert fiat_backend._melt_fee[Unit.eur] == 1.0
+    assert {Unit.sat, Unit.usd, Unit.eur}.issubset(fiat_backend.supported_units)
+    assert fiat_backend._mint_fee[Unit.usd] == 1.0
+    assert fiat_backend._mint_fee[Unit.eur] == 1.0
+    assert fiat_backend._melt_fee[Unit.usd] == 1.0
+    assert fiat_backend._melt_fee[Unit.eur] == 1.0
 
 
 @pytest.mark.asyncio
-async def test_fiat_create_invoice(mock_settings, mock_unit_set):
+async def test_fiat_create_invoice(mock_settings):
     """Test creating invoice with fiat amount"""
     mock_backend = MockLightningBackend(Unit.sat)
 
-    with patch('cashu.lightning.fiatbackend.DECIMALS', {Unit.usd: 2}):
-        fiat_backend = FiatBackend(mock_backend)
+    fiat_backend = FiatBackend(mock_backend)
 
-        # Mock exchange rate: 1 USD = 50000 sats
-        fiat_backend._sat_per_unit = {Unit.usd: 50000}
-        fiat_backend._rates_ts = 1000000
+    # Mock exchange rate: 1 USD = 50000 sats
+    fiat_backend._sat_per_unit = {Unit.usd: 50000}
+    fiat_backend._rates_ts = 1000000
 
-        # Create invoice for $10
-        amount = Amount(Unit.usd, 1000)  # $10.00
+    # Create invoice for $10
+    amount = Amount(Unit.usd, 1000)  # $10.00
 
-        with patch.object(fiat_backend, '_ensure_rates', new_callable=AsyncMock):
-            response = await fiat_backend.create_invoice(amount, memo="Test invoice")
+    with patch.object(fiat_backend, '_ensure_rates', new_callable=AsyncMock):
+        response = await fiat_backend.create_invoice(amount, memo="Test invoice")
 
-        assert response.ok
-        assert response.checking_id == "test_checking_id"
+    assert response.ok
+    assert response.checking_id == "test_checking_id"
 
-        # Check that fee was applied: $10 + 1% = $10.10 = 505000 sats
-        # But we need to spy on the actual call to verify
+    # Check that fee was applied: $10 + 1% = $10.10 = 505000 sats
+    # But we need to spy on the actual call to verify

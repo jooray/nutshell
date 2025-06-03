@@ -2,9 +2,10 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
+import json  # <-- new import
 
 from environs import Env  # type: ignore
-from pydantic import BaseSettings, Extra, Field, field_validator
+from pydantic import BaseSettings, Extra, Field, validator
 
 env = Env()
 
@@ -35,8 +36,12 @@ class CashuSettings(BaseSettings):
         case_sensitive = False
         extra = Extra.ignore
 
-        # def __init__(self, env_file=None):
-        #     self.env_file = env_file or self.env_file
+        @classmethod
+        def parse_env_var(cls, field_name: str, raw_value: str):
+            try:
+                return json.loads(raw_value)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return raw_value
 
 
 class EnvSettings(CashuSettings):
@@ -72,7 +77,7 @@ class MintSettings(CashuSettings):
     )
 
     # Custom units configuration
-    mint_units: List[str] = Field(default=["sat"], env="MINT_UNITS")
+    mint_units: List[str] = Field(default=["sat"])
     mint_unit_decimals: Dict[str, int] = Field(default_factory=dict)
 
     # Fiat backend configuration
@@ -83,43 +88,48 @@ class MintSettings(CashuSettings):
     fiat_backend_mint_fee: Dict[str, float] = Field(default_factory=dict)
     fiat_backend_melt_fee: Dict[str, float] = Field(default_factory=dict)
 
-    @field_validator("mint_unit_decimals", mode="before")
-    @classmethod
+    @validator("mint_units", "mint_fiat_backend_units", pre=True)
+    def parse_comma_separated_str(cls, v):
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            return [unit.strip() for unit in v.split(",") if unit.strip()]
+        return v
+
+    @validator("mint_unit_decimals", pre=True)
     def parse_unit_decimals(cls, v):
         if isinstance(v, dict):
             return v
         # Parse from environment variables like MINT_UNIT_DECIMALS_CZK=2
         result = {}
-        for key, value in env_settings().items():
+        for key in env:
             if key.startswith("MINT_UNIT_DECIMALS_"):
                 unit = key.replace("MINT_UNIT_DECIMALS_", "").lower()
-                result[unit] = int(value)
+                result[unit] = env.int(key)
         return result
 
-    @field_validator("fiat_backend_mint_fee", mode="before")
-    @classmethod
+    @validator("fiat_backend_mint_fee", pre=True)
     def parse_fiat_mint_fees(cls, v):
         if isinstance(v, dict):
             return v
         # Parse from environment variables like FIAT_BACKEND_MINT_FEE_USD=1.0
         result = {}
-        for key, value in env_settings().items():
+        for key in env:
             if key.startswith("FIAT_BACKEND_MINT_FEE_"):
                 unit = key.replace("FIAT_BACKEND_MINT_FEE_", "").lower()
-                result[unit] = float(value)
+                result[unit] = env.float(key)
         return result
 
-    @field_validator("fiat_backend_melt_fee", mode="before")
-    @classmethod
+    @validator("fiat_backend_melt_fee", pre=True)
     def parse_fiat_melt_fees(cls, v):
         if isinstance(v, dict):
             return v
         # Parse from environment variables like FIAT_BACKEND_MELT_FEE_USD=1.0
         result = {}
-        for key, value in env_settings().items():
+        for key in env:
             if key.startswith("FIAT_BACKEND_MELT_FEE_"):
                 unit = key.replace("FIAT_BACKEND_MELT_FEE_", "").lower()
-                result[unit] = float(value)
+                result[unit] = env.float(key)
         return result
 
 

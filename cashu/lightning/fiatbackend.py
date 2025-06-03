@@ -10,7 +10,6 @@ from loguru import logger
 from cashu.core.base import Amount, MeltQuote, Unit
 from cashu.core.models import PostMeltQuoteRequest
 from cashu.core.settings import settings
-from cashu.helpers.units import UNIT_SET, DECIMALS
 from .base import (
     InvoiceResponse,
     LightningBackend,
@@ -51,10 +50,10 @@ class FiatBackend(LightningBackend):
         self._cache_seconds = cache_seconds
 
         # ─── Which units does THIS backend cover? ───────────────────────
-        fiat_units = {
+        fiat_units: set[Unit] = {
             Unit[c.lower()]
             for c in settings.mint_fiat_backend_units
-            if c.lower() in [u.name for u in UNIT_SET]
+            if c.lower() in Unit.__members__
         }
         if not fiat_units:
             raise Unsupported("FIAT_BACKEND_UNITS empty or unknown codes")
@@ -63,7 +62,7 @@ class FiatBackend(LightningBackend):
         self.supported_units = self.ln.supported_units.union(self._fiat_units)
 
         # ─── Precision & fee tables ─────────────────────────────────────
-        self._decimals = {u: DECIMALS[u] for u in self._fiat_units}
+        self._decimals = {u: u.decimals for u in self._fiat_units}
 
         self._mint_fee = {
             u: settings.fiat_backend_mint_fee.get(u.name, 0.0)
