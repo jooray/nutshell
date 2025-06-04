@@ -100,24 +100,26 @@ class FiatBackend(LightningBackend):
                 data = r.json()["bitcoin"]
                 for u in self._fiat_units:
                     if (v := data.get(u.name)) not in (None, 0):
-                        self._sat_per_unit[u] = 1e8 / float(v)
+                        sats_per_btc = 1e8
+                        main_units_per_btc = float(v)
+                        smallest_units_per_btc = main_units_per_btc * (10**self._decimals[u])
+                        self._sat_per_unit[u] = sats_per_btc / smallest_units_per_btc
+
+                if Unit.usd not in self._sat_per_unit:
+                    raise RuntimeError("USD/BTC quote missing")
+
+                self._rates_ts = time.time()
             except Exception as exc:
                 logger.error(f"FX fetch failed: {exc}")
-
-            if Unit.usd not in self._sat_per_unit:
-                raise RuntimeError("USD/BTC quote missing – abort fiat backend start")
-
-            self._rates_ts = time.time()
+                raise RuntimeError(f"Unable to fetch exchange rates: {exc}")
 
     async def _fiat_to_sat(self, amount: Amount) -> int:
         await self._ensure_rates()
-        sat_per_unit = self._sat_per_unit[amount.unit]
-        return int(round((amount.amount / 10**self._decimals[amount.unit]) * sat_per_unit))
+        return int(round(amount.amount * self._sat_per_unit[amount.unit]))
 
     async def _sat_to_fiat(self, sat: int, unit: Unit) -> Amount:
         await self._ensure_rates()
-        sat_per_unit = self._sat_per_unit[unit]
-        sub = int(round((sat / sat_per_unit) * 10**self._decimals[unit]))
+        sub = int(round(sat / self._sat_per_unit[unit]))
         return Amount(unit, sub)
 
     # ─────────────────── LightningBackend interface ─────────────────────
@@ -133,18 +135,22 @@ class FiatBackend(LightningBackend):
         **kwargs,
     ) -> InvoiceResponse:
         if amount.unit in self._fiat_units:
-            gross = int(round(amount.amount * (1 + self._mint_fee[amount.unit] / 100)))
-            sats = await self._fiat_to_sat(Amount(amount.unit, gross))
-            resp = await self.ln.create_invoice(
-                Amount(Unit.sat, sats),
-                memo=memo,
-                description_hash=description_hash,
-                unhashed_description=unhashed_description,
-                **kwargs,
-            )
-            if resp.ok:
-                self._minted[amount.unit] += amount.amount
-            return resp
+            try:
+                logger.info(f"Creating invoice for {amount.str()} with mint fee {self._mint_fee[amount.unit]}%")
+                gross = int(round(amount.amount * (1 + self._mint_fee[amount.unit] / 100)))
+                sats = await self._fiat_to_sat(Amount(amount.unit, gross))
+                resp = await self.ln.create_invoice(
+                    Amount(Unit.sat, sats),
+                    memo=memo,
+                    description_hash=description_hash,
+                    unhashed_description=unhashed_description,
+                    **kwargs,
+                )
+                if resp.ok:
+                    self._minted[amount.unit] += amount.amount
+                return resp
+            except RuntimeError as e:
+                return InvoiceResponse(ok=False, error_message=str(e))
 
         return await self.ln.create_invoice(
             amount,
@@ -184,16 +190,25 @@ class FiatBackend(LightningBackend):
         if unit not in self._fiat_units:
             return ln_quote
 
-        amt = await self._sat_to_fiat(ln_quote.amount.to(Unit.sat).amount, unit)
-        fee = await self._sat_to_fiat(ln_quote.fee.to(Unit.sat).amount, unit)
-        gross = int(round(amt.amount * (1 + self._melt_fee[unit] / 100)))
+        try:
+            amt = await self._sat_to_fiat(ln_quote.amount.to(Unit.sat).amount, unit)
+            fee = await self._sat_to_fiat(ln_quote.fee.to(Unit.sat).amount, unit)
+            gross = int(round(amt.amount * (1 + self._melt_fee[unit] / 100)))
 
-        return PaymentQuoteResponse(
-            ok=ln_quote.ok,
-            checking_id=ln_quote.checking_id,
-            amount=Amount(unit, gross),
-            fee=fee,
-        )
+            return PaymentQuoteResponse(
+                ok=ln_quote.ok,
+                checking_id=ln_quote.checking_id,
+                amount=Amount(unit, gross),
+                fee=fee,
+            )
+        except RuntimeError as e:
+            return PaymentQuoteResponse(
+                ok=False,
+                checking_id=ln_quote.checking_id,
+                amount=Amount(unit, 0),
+                fee=Amount(unit, 0),
+                error_message=str(e),
+            )
 
     # ───────────────────────── introspection ────────────────────────────
     @property

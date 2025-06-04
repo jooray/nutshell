@@ -2,8 +2,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-import json  # <-- new import
-
+import json
 from environs import Env  # type: ignore
 from pydantic import BaseSettings, Extra, Field, validator
 
@@ -98,38 +97,47 @@ class MintSettings(CashuSettings):
 
     @validator("mint_unit_decimals", pre=True)
     def parse_unit_decimals(cls, v):
-        if isinstance(v, dict):
+        if isinstance(v, dict) and v:
             return v
-        # Parse from environment variables like MINT_UNIT_DECIMALS_CZK=2
+        units_raw = env.str("MINT_UNITS", default="sat,msat,usd,eur")
+        units = [u.strip().lower() for u in units_raw.split(",") if u.strip()]
         result = {}
-        for key in env:
-            if key.startswith("MINT_UNIT_DECIMALS_"):
-                unit = key.replace("MINT_UNIT_DECIMALS_", "").lower()
+        for unit in units:
+            key = f"MINT_UNIT_DECIMALS_{unit.upper()}"
+            try:
                 result[unit] = env.int(key)
+            except Exception:
+                continue
         return result
 
     @validator("fiat_backend_mint_fee", pre=True)
     def parse_fiat_mint_fees(cls, v):
-        if isinstance(v, dict):
+        if isinstance(v, dict) and v:
             return v
-        # Parse from environment variables like FIAT_BACKEND_MINT_FEE_USD=1.0
+        units_raw = env.str("MINT_FIAT_BACKEND_UNITS", default="")
+        units = [u.strip().lower() for u in units_raw.split(",") if u.strip()]
         result = {}
-        for key in env:
-            if key.startswith("FIAT_BACKEND_MINT_FEE_"):
-                unit = key.replace("FIAT_BACKEND_MINT_FEE_", "").lower()
+        for unit in units:
+            key = f"FIAT_BACKEND_MINT_FEE_{unit.upper()}"
+            try:
                 result[unit] = env.float(key)
+            except Exception:
+                continue
         return result
 
     @validator("fiat_backend_melt_fee", pre=True)
     def parse_fiat_melt_fees(cls, v):
-        if isinstance(v, dict):
+        if isinstance(v, dict) and v:
             return v
-        # Parse from environment variables like FIAT_BACKEND_MELT_FEE_USD=1.0
+        units_raw = env.str("MINT_FIAT_BACKEND_UNITS", default="")
+        units = [u.strip().lower() for u in units_raw.split(",") if u.strip()]
         result = {}
-        for key in env:
-            if key.startswith("FIAT_BACKEND_MELT_FEE_"):
-                unit = key.replace("FIAT_BACKEND_MELT_FEE_", "").lower()
+        for unit in units:
+            key = f"FIAT_BACKEND_MELT_FEE_{unit.upper()}"
+            try:
                 result[unit] = env.float(key)
+            except Exception:
+                continue
         return result
 
 

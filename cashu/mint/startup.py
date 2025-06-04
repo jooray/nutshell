@@ -46,9 +46,12 @@ for key, value in settings.dict().items():
 
     logger.debug(f"{key}: {value}")
 
+Unit.init_custom_units()
+
 wallets_module = importlib.import_module("cashu.lightning")
 
 backends: Dict[Method, Dict[Unit, LightningBackend]] = {}
+
 if settings.mint_backend_bolt11_sat:
     backend_bolt11_sat = getattr(wallets_module, settings.mint_backend_bolt11_sat)(
         unit=Unit.sat
@@ -69,6 +72,21 @@ if settings.mint_backend_bolt11_eur:
         unit=Unit.eur
     )
     backends.setdefault(Method.bolt11, {})[Unit.eur] = backend_bolt11_eur
+
+if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
+    base_backend = backend_bolt11_sat
+
+    fiat_backend = FiatBackend(base_backend)
+
+    for unit_str in settings.mint_fiat_backend_units:
+        try:
+            unit = Unit(unit_str.lower())
+            if unit not in backends.get(Method.bolt11, {}):
+                backends.setdefault(Method.bolt11, {})[unit] = fiat_backend
+                logger.info(f"Initialized FiatBackend for unit: {unit.name}")
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Unknown unit in MINT_FIAT_BACKEND_UNITS: {unit_str} - {e}")
+
 if not backends:
     raise Exception("No backends are set.")
 

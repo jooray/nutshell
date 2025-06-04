@@ -555,21 +555,40 @@ class Unit(Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Handle dynamic unit creation from settings"""
         if isinstance(value, str):
             value_lower = value.lower()
             if value_lower in [u.lower() for u in settings.mint_units]:
-                existing_values = {member.value for member in cls}
+                for member in cls:
+                    if member.name == value_lower:
+                        return member
 
-                next_id = 0
+                existing_values = {member.value for member in cls}
+                next_id = 5
                 while next_id in existing_values:
                     next_id += 1
 
                 new_member = object.__new__(cls)
                 new_member._name_ = value_lower
                 new_member._value_ = next_id
-                return cls._value2member_map_.setdefault(next_id, new_member)
+
+                cls._value2member_map_[next_id] = new_member
+                cls._member_map_[value_lower] = new_member
+                cls._member_names_.append(value_lower)
+
+                return new_member
         return None
+
+    @classmethod
+    def init_custom_units(cls):
+        for unit in settings.mint_units:
+            try:
+                Unit(unit.lower())
+            except ValueError:
+                pass
+
+        logger.debug("Initialized units:")
+        for member in cls:
+            logger.debug(f"  {member.name} = {member.value}")
 
     @property
     def decimals(self) -> int:
@@ -587,7 +606,7 @@ class Unit(Enum):
         elif self == Unit.auth:
             return 0
         else:
-            return settings.mint_unit_decimals.get(self.name, 2)
+            return settings.mint_unit_decimals.get(self.name, 0)
 
     def str(self, amount: int | float) -> str:
         if self == Unit.sat:
@@ -607,7 +626,7 @@ class Unit(Enum):
             if unit_name not in [u.lower() for u in settings.mint_units]:
                 raise Exception("Invalid unit")
 
-            decimals = settings.mint_unit_decimals.get(unit_name, 2)
+            decimals = settings.mint_unit_decimals.get(unit_name, 0)
             if decimals > 0:
                 divisor = 10 ** decimals
                 return f"{amount/divisor:.{decimals}f} {unit_name.upper()}"
