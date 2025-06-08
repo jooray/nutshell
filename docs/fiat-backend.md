@@ -144,16 +144,16 @@ To get an overview of all fiat operations:
 
 ```bash
 # Show summary for all currencies
-cashu-mint accounting-summary
+poetry run mint-tools accounting-summary
 
 # Filter by currency
-cashu-mint accounting-summary --unit usd
+poetry run mint-tools accounting-summary --unit usd
 
 # Filter by date range
-cashu-mint accounting-summary --start-date 2024-01-01 --end-date 2024-01-31
+poetry run mint-tools accounting-summary --start-date 2024-01-01 --end-date 2024-01-31
 
 # Export as JSON
-cashu-mint accounting-summary --json > accounting.json
+poetry run mint-tools accounting-summary --json > accounting.json
 ```
 
 Example output:
@@ -172,13 +172,51 @@ To see individual transactions:
 
 ```bash
 # Show recent transactions
-cashu-mint accounting-entries
+poetry run mint-tools accounting-entries
 
 # Filter by operation type
-cashu-mint accounting-entries --operation mint
+poetry run mint-tools accounting-entries --operation mint
 
 # Filter by currency and limit results
-cashu-mint accounting-entries --unit eur --limit 10
+poetry run mint-tools accounting-entries --unit eur --limit 10
+```
+
+### Running Commands in Different Environments
+
+#### Local Development (Poetry)
+
+When running locally with poetry (recommended for development):
+
+```bash
+# Install dependencies
+poetry install
+
+# Run accounting commands
+poetry run mint-tools accounting-summary
+poetry run mint-tools accounting-entries
+```
+
+#### Docker Compose
+
+When running with docker-compose:
+
+```bash
+# Run accounting commands in the mint container
+docker-compose exec mint mint-tools accounting-summary
+docker-compose exec mint mint-tools accounting-entries --unit usd
+
+# Or run one-off commands
+docker-compose run --rm mint mint-tools accounting-summary --json
+```
+
+#### Production (Installed Package)
+
+If you have installed cashu as a system package:
+
+```bash
+# Direct command execution
+mint-tools accounting-summary
+mint-tools accounting-entries
 ```
 
 ### Programmatic Access

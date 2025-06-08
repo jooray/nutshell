@@ -44,6 +44,7 @@ redis = "^5.1.1"
 brotli = "^1.1.0"
 zstandard = "^0.23.0"
 jinja2 = "^3.1.5"
+tabulate = "^0.9.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest-asyncio = "^0.24.0"
@@ -68,6 +69,7 @@ asyncio_default_fixture_loop_scope = "function"
 mint = "cashu.mint.main:main"
 cashu = "cashu.wallet.cli.cli:cli"
 wallet-test = "tests.test_wallet:test"
+mint-tools = "cashu.mint.cli:cli"
 
 [tool.ruff]
 line-length = 88
