@@ -195,20 +195,15 @@ class FiatBackend(LightningBackend):
             try:
                 logger.info(f"Paying invoice for {quote.amount} {unit.name} with fee reserve {quote.fee_reserve}")
 
+                # TODO FOR MPP
+                # Melt quote by itself does not have a flag for MPP payments.
+                # Other backends figure it out by parsing the request (e.g. Bolt11) and
+                # checking if the amount is larger than the amount in the melt quote.
+                # Maybe adding the flag to MeltQuote would be better?
+                # TODO FOR MPP
+
                 # Re-calculate the current quote to verify the total amount is still sufficient
                 fresh_fiat_quote_request = PostMeltQuoteRequest(request=quote.request, unit=unit.name)
-                
-                # If this is an MPP payment (has outputs), preserve the MPP options
-                if quote.outputs and self.supports_mpp:
-                    # The amount for MPP should be the quote amount (what the user wants to pay)
-                    fresh_fiat_quote_request = PostMeltQuoteRequest(
-                        request=quote.request,
-                        unit=unit.name,
-                        options=PostMeltRequestOptions(
-                            mpp=PostMeltRequestOptionMpp(amount=quote.amount)
-                        )
-                    )
-                
                 fresh_fiat_quote = await self.get_payment_quote(fresh_fiat_quote_request)
 
                 if hasattr(fresh_fiat_quote, 'error_message') and fresh_fiat_quote.error_message:
