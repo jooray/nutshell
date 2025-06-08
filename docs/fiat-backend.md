@@ -121,6 +121,118 @@ cents would be a problem, you would need to round to full franks.
 
 Minibits does not support custom currencies, they are hardcoded. They should be discovered.
 
+## Accounting and Monitoring
+
+The fiat backend includes built-in accounting to track all mint and melt operations. This data is stored in the `unit_accounting` table and can be accessed through CLI commands.
+
+### Database Schema
+
+All fiat transactions are recorded in the `unit_accounting` table with the following information:
+- Unit (currency)
+- Amount (in smallest unit, e.g., cents)
+- Operation type (mint or melt)
+- Exchange rate at time of transaction
+- Satoshi amount
+- Fee percentage and amount
+- Timestamp
+
+### Accessing Accounting Data
+
+#### Summary View
+
+To get an overview of all fiat operations:
+
+```bash
+# Show summary for all currencies
+cashu-mint accounting-summary
+
+# Filter by currency
+cashu-mint accounting-summary --unit usd
+
+# Filter by date range
+cashu-mint accounting-summary --start-date 2024-01-01 --end-date 2024-01-31
+
+# Export as JSON
+cashu-mint accounting-summary --json > accounting.json
+```
+
+Example output:
+```
++------+---------+--------+-------+-----------+-----------+-------------+------------+------------+
+| Unit | Minted  | Melted | Net   | Mint Fees | Melt Fees | Total Fees  | Mint Count | Melt Count |
++------+---------+--------+-------+-----------+-----------+-------------+------------+------------+
+| USD  | 1000000 | 750000 | 250000| 10000     | 7500      | 17500       | 45         | 32         |
+| EUR  | 850000  | 620000 | 230000| 8500      | 6200      | 14700       | 38         | 28         |
++------+---------+--------+-------+-----------+-----------+-------------+------------+------------+
+```
+
+#### Detailed Transaction View
+
+To see individual transactions:
+
+```bash
+# Show recent transactions
+cashu-mint accounting-entries
+
+# Filter by operation type
+cashu-mint accounting-entries --operation mint
+
+# Filter by currency and limit results
+cashu-mint accounting-entries --unit eur --limit 10
+```
+
+### Programmatic Access
+
+You can also access accounting data programmatically:
+
+```python
+from cashu.core.db import Database
+from cashu.mint.crud import get_fiat_accounting_summary
+from cashu.core.settings import settings
+
+async def check_accounting():
+    db = Database("mint", settings.mint_database)
+    summary = await get_fiat_accounting_summary(db)
+    
+    for unit, data in summary.items():
+        net_position = data["minted"] - data["melted"]
+        total_fees = data["mint_fees"] + data["melt_fees"]
+        print(f"{unit}: Net position: {net_position}, Total fees collected: {total_fees}")
+```
+
+### Monitoring Best Practices
+
+1. **Regular Reconciliation**: Run accounting summaries daily to track positions
+2. **Exchange Rate Monitoring**: Monitor the exchange rates being used for conversions
+3. **Fee Analysis**: Track fee collection to ensure profitability
+4. **Hedging**: Use the net position data to inform hedging strategies
+
+### Database Queries
+
+For advanced analysis, you can query the database directly:
+
+```sql
+-- Daily volume by currency
+SELECT 
+    unit,
+    DATE(created) as date,
+    SUM(CASE WHEN operation = 'mint' THEN amount ELSE 0 END) as minted,
+    SUM(CASE WHEN operation = 'melt' THEN amount ELSE 0 END) as melted
+FROM fiat_accounting
+GROUP BY unit, DATE(created)
+ORDER BY date DESC;
+
+-- Average exchange rates over time
+SELECT 
+    unit,
+    DATE(created) as date,
+    AVG(exchange_rate) as avg_rate,
+    MIN(exchange_rate) as min_rate,
+    MAX(exchange_rate) as max_rate
+FROM fiat_accounting
+GROUP BY unit, DATE(created);
+```
+
 ## Further development
 
 - Better and more resilient exchange rate API

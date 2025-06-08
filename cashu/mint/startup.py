@@ -73,10 +73,29 @@ if settings.mint_backend_bolt11_eur:
     )
     backends.setdefault(Method.bolt11, {})[Unit.eur] = backend_bolt11_eur
 
+if not backends:
+    raise Exception("No backends are set.")
+
+if not settings.mint_private_key:
+    raise Exception("No mint private key is set.")
+
+# Create the database instance once
+mint_db = Database("mint", settings.mint_database)
+
+ledger = Ledger(
+    db=mint_db,
+    seed=settings.mint_private_key,
+    seed_decryption_key=settings.mint_seed_decryption_key,
+    derivation_path=settings.mint_derivation_path,
+    backends=backends,
+    crud=LedgerCrudSqlite(),
+)
+
+# Now configure fiat backends with the same database instance
 if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
     base_backend = backend_bolt11_sat
 
-    fiat_backend = FiatBackend(base_backend)
+    fiat_backend = FiatBackend(base_backend, crud=ledger.crud, db=mint_db)
 
     for unit_str in settings.mint_fiat_backend_units:
         try:
@@ -86,21 +105,6 @@ if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
                 logger.info(f"Initialized FiatBackend for unit: {unit.name}")
         except (KeyError, ValueError) as e:
             logger.warning(f"Unknown unit in MINT_FIAT_BACKEND_UNITS: {unit_str} - {e}")
-
-if not backends:
-    raise Exception("No backends are set.")
-
-if not settings.mint_private_key:
-    raise Exception("No mint private key is set.")
-
-ledger = Ledger(
-    db=Database("mint", settings.mint_database),
-    seed=settings.mint_private_key,
-    seed_decryption_key=settings.mint_seed_decryption_key,
-    derivation_path=settings.mint_derivation_path,
-    backends=backends,
-    crud=LedgerCrudSqlite(),
-)
 
 # start auth ledger
 auth_ledger = AuthLedger(

@@ -8,9 +8,12 @@ import httpx
 from loguru import logger
 
 from cashu.core.base import Amount, MeltQuote, Unit
+from cashu.core.db import Database
 from cashu.core.models import PostMeltQuoteRequest
 from cashu.core.settings import settings
+from cashu.mint.crud import LedgerCrud
 from .base import (
+    Amount,
     InvoiceResponse,
     LightningBackend,
     PaymentQuoteResponse,
@@ -18,34 +21,30 @@ from .base import (
     PaymentResult,
     PaymentStatus,
     StatusResponse,
-    Unsupported,
+    Unit,
 )
 
 
 class FiatBackend(LightningBackend):
-    """
-    Wrap `LightningBackend` so the mint can speak any fiat / alt-unit that is
-    listed in ``FIAT_BACKEND_UNITS``.
-
-    Per-unit fee knobs (*percent*):
-
-        FIAT_BACKEND_MINT_FEE_<CODE>
-        FIAT_BACKEND_MELT_FEE_<CODE>
-    """
+    """A wrapper for any LightningBackend that adds support for fiat units."""
 
     supported_units: set[Unit]
 
     def __init__(
         self,
-        lightning_backend: LightningBackend,
+        backend: LightningBackend,
+        crud: LedgerCrud,
+        db: Optional[Database] = None,
         *,
         cache_seconds: int = 300,
         http_client: Optional[httpx.AsyncClient] = None,
     ):
-        if Unit.sat not in lightning_backend.supported_units:
+        if Unit.sat not in backend.supported_units:
             raise Unsupported("wrapped backend must at least support sat")
 
-        self.ln = lightning_backend
+        self.backend = backend
+        self.crud = crud
+        self.db = db
         self._client = http_client or httpx.AsyncClient(timeout=10)
         self._cache_seconds = cache_seconds
 
@@ -59,7 +58,7 @@ class FiatBackend(LightningBackend):
             raise Unsupported("FIAT_BACKEND_UNITS empty or unknown codes")
 
         self._fiat_units = fiat_units
-        self.supported_units = self.ln.supported_units.union(self._fiat_units)
+        self.supported_units = self.backend.supported_units.union(self._fiat_units)
 
         # ─── Precision & fee tables ─────────────────────────────────────
         self._decimals = {u: u.decimals for u in self._fiat_units}
@@ -124,7 +123,7 @@ class FiatBackend(LightningBackend):
 
     # ─────────────────── LightningBackend interface ─────────────────────
     async def status(self) -> StatusResponse:  # pragma: no cover
-        return await self.ln.status()
+        return await self.backend.status()
 
     async def create_invoice(
         self,
@@ -137,9 +136,15 @@ class FiatBackend(LightningBackend):
         if amount.unit in self._fiat_units:
             try:
                 logger.info(f"Creating invoice for {amount.str()} with mint fee {self._mint_fee[amount.unit]}%")
-                gross = int(round(amount.amount * (1 + self._mint_fee[amount.unit] / 100)))
+                fee_percent = self._mint_fee[amount.unit]
+                gross = int(round(amount.amount * (1 + fee_percent / 100)))
+                fee_amount = gross - amount.amount
                 sats = await self._fiat_to_sat(Amount(amount.unit, gross))
-                resp = await self.ln.create_invoice(
+
+                await self._ensure_rates()
+                exchange_rate = self._sat_per_unit[amount.unit]
+
+                resp = await self.backend.create_invoice(
                     Amount(Unit.sat, sats),
                     memo=memo,
                     description_hash=description_hash,
@@ -148,11 +153,28 @@ class FiatBackend(LightningBackend):
                 )
                 if resp.ok:
                     self._minted[amount.unit] += amount.amount
+
+                    # Record in database if available
+                    if self.db and self.crud:
+                        try:
+                            await self.crud.store_unit_accounting_entry(
+                                db=self.db,
+                                unit=amount.unit.name,
+                                amount=amount.amount,
+                                operation="mint",
+                                exchange_rate=exchange_rate,
+                                sat_amount=sats,
+                                fee_percent=fee_percent,
+                                fee_amount=fee_amount,
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to record mint accounting: {e}")
+
                 return resp
             except RuntimeError as e:
                 return InvoiceResponse(ok=False, error_message=str(e))
 
-        return await self.ln.create_invoice(
+        return await self.backend.create_invoice(
             amount,
             memo=memo,
             description_hash=description_hash,
@@ -165,26 +187,50 @@ class FiatBackend(LightningBackend):
             fee_limit_sat = await self._fiat_to_sat(Amount(quote.unit, fee_limit_msat // 1000))
             fee_limit_msat = fee_limit_sat * 1000
 
-        return await self.ln.pay_invoice(quote, fee_limit_msat, **kwargs)
+        resp = await self.backend.pay_invoice(quote, fee_limit_msat, **kwargs)
+
+        if resp.result == PaymentResult.SETTLED and quote.unit in self._fiat_units and self.db and self.crud:
+            try:
+                await self._ensure_rates()
+                exchange_rate = self._sat_per_unit[quote.unit]
+                fee_percent = self._melt_fee[quote.unit]
+                fee_amount = int(round(quote.amount * fee_percent / 100))
+                sat_amount = await self._fiat_to_sat(quote.amount)
+
+                await self.crud.store_unit_accounting_entry(
+                    db=self.db,
+                    unit=quote.unit.name,
+                    amount=quote.amount,
+                    operation="melt",
+                    exchange_rate=exchange_rate,
+                    sat_amount=sat_amount,
+                    fee_percent=fee_percent,
+                    fee_amount=fee_amount,
+                )
+                self._melted[quote.unit] += quote.amount
+            except Exception as e:
+                logger.error(f"Failed to record melt accounting: {e}")
+
+        return resp
 
     async def pay_invoice_with_quote(self, quote: MeltQuote, **kwargs) -> PaymentResult:
-        resp = await self.ln.pay_invoice_with_quote(quote, **kwargs)
+        resp = await self.backend.pay_invoice_with_quote(quote, **kwargs)
         if resp.settled and quote.unit in self._fiat_units:
             self._melted[quote.unit] += quote.amount.amount
         return resp
 
     async def get_invoice_status(self, checking_id: str) -> PaymentStatus:
-        return await self.ln.get_invoice_status(checking_id)
+        return await self.backend.get_invoice_status(checking_id)
 
     async def get_payment_status(self, checking_id: str) -> PaymentStatus:
-        return await self.ln.get_payment_status(checking_id)
+        return await self.backend.get_payment_status(checking_id)
 
     async def paid_invoices_stream(self) -> AsyncGenerator[str, None]:
-        async for p in self.ln.paid_invoices_stream():
+        async for p in self.backend.paid_invoices_stream():
             yield p
 
     async def get_payment_quote(self, melt_quote: PostMeltQuoteRequest) -> PaymentQuoteResponse:
-        ln_quote = await self.ln.get_payment_quote(melt_quote)
+        ln_quote = await self.backend.get_payment_quote(melt_quote)
         unit = melt_quote.unit or Unit.sat
 
         if unit not in self._fiat_units:

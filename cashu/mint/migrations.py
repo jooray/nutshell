@@ -968,3 +968,30 @@ async def m027_add_balance_to_keysets_and_log_table(db: Database):
                 );
             """
         )
+
+
+async def m028_add_unit_accounting_table(db: Database):
+    async with db.connect() as conn:
+        await conn.execute(
+            f"""
+                CREATE TABLE IF NOT EXISTS {db.table_with_schema('unit_accounting')} (
+                    id {db.serial_primary_key},
+                    unit TEXT NOT NULL,
+                    amount {db.big_int} NOT NULL,
+                    operation TEXT NOT NULL CHECK (operation IN ('mint', 'melt')),
+                    exchange_rate REAL NOT NULL,
+                    sat_amount {db.big_int} NOT NULL,
+                    fee_percent REAL NOT NULL,
+                    fee_amount {db.big_int} NOT NULL,
+                    created TIMESTAMP DEFAULT {db.timestamp_now}
+                );
+            """
+        )
+
+        # Create indexes for better query performance
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_unit_accounting_unit ON {db.table_with_schema('unit_accounting')} (unit);"
+        )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_unit_accounting_created ON {db.table_with_schema('unit_accounting')} (created);"
+        )

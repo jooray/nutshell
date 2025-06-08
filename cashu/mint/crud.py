@@ -277,6 +277,44 @@ class LedgerCrud(ABC):
         conn: Optional[Connection] = None,
     ) -> MintBalanceLogEntry | None: ...
 
+    @abstractmethod
+    async def store_unit_accounting_entry(
+        self,
+        *,
+        db: Database,
+        unit: str,
+        amount: int,
+        operation: str,
+        exchange_rate: float,
+        sat_amount: int,
+        fee_percent: float,
+        fee_amount: int,
+        conn: Optional[Connection] = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def get_unit_accounting_summary(
+        self,
+        *,
+        db: Database,
+        unit: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        conn: Optional[Connection] = None,
+    ) -> Dict[str, Dict[str, int]]: ...
+
+    @abstractmethod
+    async def get_unit_accounting_entries(
+        self,
+        *,
+        db: Database,
+        unit: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]: ...
+
 
 class LedgerCrudSqlite(LedgerCrud):
     """Implementation of LedgerCrud for sqlite.
@@ -905,3 +943,121 @@ class LedgerCrudSqlite(LedgerCrud):
         )
 
         return MintBalanceLogEntry.from_row(row) if row else None
+
+    async def store_unit_accounting_entry(
+        self,
+        *,
+        db: Database,
+        unit: str,
+        amount: int,
+        operation: str,
+        exchange_rate: float,
+        sat_amount: int,
+        fee_percent: float,
+        fee_amount: int,
+        conn: Optional[Connection] = None,
+    ) -> None:
+        """Store an accounting entry for unit operations (mint/melt)."""
+        await (conn or db).execute(
+            f"""
+            INSERT INTO {db.table_with_schema('unit_accounting')}
+            (unit, amount, operation, exchange_rate, sat_amount, fee_percent, fee_amount)
+            VALUES (:unit, :amount, :operation, :exchange_rate, :sat_amount, :fee_percent, :fee_amount)
+            """,
+            {
+                "unit": unit,
+                "amount": amount,
+                "operation": operation,
+                "exchange_rate": exchange_rate,
+                "sat_amount": sat_amount,
+                "fee_percent": fee_percent,
+                "fee_amount": fee_amount,
+            },
+        )
+
+    async def get_unit_accounting_summary(
+        self,
+        *,
+        db: Database,
+        unit: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        conn: Optional[Connection] = None,
+    ) -> Dict[str, Dict[str, int]]:
+        """Get accounting summary grouped by unit and operation."""
+        query = f"""
+            SELECT
+                unit,
+                operation,
+                SUM(amount) as total_amount,
+                SUM(sat_amount) as total_sat_amount,
+                SUM(fee_amount) as total_fee_amount,
+                COUNT(*) as transaction_count
+            FROM {db.table_with_schema('unit_accounting')}
+            WHERE 1=1
+        """
+        params = {}
+
+        if unit:
+            query += " AND unit = :unit"
+            params["unit"] = unit
+
+        if start_date:
+            query += " AND created >= :start_date"
+            params["start_date"] = start_date
+
+        if end_date:
+            query += " AND created <= :end_date"
+            params["end_date"] = end_date
+
+        query += " GROUP BY unit, operation"
+
+        rows = await (conn or db).fetchall(query, params)
+
+        summary = {}
+        for row in rows:
+            unit = row["unit"]
+            if unit not in summary:
+                summary[unit] = {"minted": 0, "melted": 0, "mint_fees": 0, "melt_fees": 0, "mint_count": 0, "melt_count": 0}
+
+            if row["operation"] == "mint":
+                summary[unit]["minted"] = row["total_amount"]
+                summary[unit]["mint_fees"] = row["total_fee_amount"]
+                summary[unit]["mint_count"] = row["transaction_count"]
+            elif row["operation"] == "melt":
+                summary[unit]["melted"] = row["total_amount"]
+                summary[unit]["melt_fees"] = row["total_fee_amount"]
+                summary[unit]["melt_count"] = row["transaction_count"]
+
+        return summary
+
+    async def get_unit_accounting_entries(
+        self,
+        *,
+        db: Database,
+        unit: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        conn: Optional[Connection] = None,
+    ) -> List[Dict]:
+        """Get individual accounting entries."""
+        query = f"""
+            SELECT * FROM {db.table_with_schema('unit_accounting')}
+            WHERE 1=1
+        """
+        params = {"limit": limit, "offset": offset}
+
+        if unit:
+            query += " AND unit = :unit"
+            params["unit"] = unit
+
+        if operation:
+            query += " AND operation = :operation"
+            params["operation"] = operation
+
+        query += " ORDER BY created DESC LIMIT :limit OFFSET :offset"
+
+        rows = await (conn or db).fetchall(query, params)
+
+        return [dict(row) for row in rows]
