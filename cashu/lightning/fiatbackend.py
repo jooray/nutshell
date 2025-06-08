@@ -10,7 +10,7 @@ from loguru import logger
 
 from cashu.core.base import Amount, MeltQuote, Unit
 from cashu.core.db import Database
-from cashu.core.models import PostMeltQuoteRequest
+from cashu.core.models import PostMeltQuoteRequest, PostMeltRequestOptions, PostMeltRequestOptionMpp
 from cashu.core.settings import settings
 from cashu.mint.crud import LedgerCrud
 from .base import (
@@ -49,6 +49,8 @@ class FiatBackend(LightningBackend):
         self.db = db
         self._client = http_client or httpx.AsyncClient(timeout=10)
         self._cache_seconds = cache_seconds
+
+        self.supports_mpp = backend.supports_mpp
 
         # ─── Which units does THIS backend cover? ───────────────────────
         fiat_units: set[Unit] = {
@@ -195,6 +197,18 @@ class FiatBackend(LightningBackend):
 
                 # Re-calculate the current quote to verify the total amount is still sufficient
                 fresh_fiat_quote_request = PostMeltQuoteRequest(request=quote.request, unit=unit.name)
+                
+                # If this is an MPP payment (has outputs), preserve the MPP options
+                if quote.outputs and self.supports_mpp:
+                    # The amount for MPP should be the quote amount (what the user wants to pay)
+                    fresh_fiat_quote_request = PostMeltQuoteRequest(
+                        request=quote.request,
+                        unit=unit.name,
+                        options=PostMeltRequestOptions(
+                            mpp=PostMeltRequestOptionMpp(amount=quote.amount)
+                        )
+                    )
+                
                 fresh_fiat_quote = await self.get_payment_quote(fresh_fiat_quote_request)
 
                 if hasattr(fresh_fiat_quote, 'error_message') and fresh_fiat_quote.error_message:
@@ -312,12 +326,22 @@ class FiatBackend(LightningBackend):
             yield p
 
     async def get_payment_quote(self, melt_quote: PostMeltQuoteRequest) -> PaymentQuoteResponse:
-        ln_quote = await self.backend.get_payment_quote(
-            PostMeltQuoteRequest(
+
+        if self.supports_mpp and melt_quote.is_mpp:
+            backend_request = PostMeltQuoteRequest(
                 request=melt_quote.request,
-                unit="sat"
+                unit="msat",
+                options=PostMeltRequestOptions(
+                    mpp=PostMeltRequestOptionMpp(amount=melt_quote.mpp_amount)
+                )
             )
-        )
+        else:
+            backend_request = PostMeltQuoteRequest(
+               request=melt_quote.request,
+               unit="msat"
+            )
+
+        ln_quote = await self.backend.get_payment_quote(backend_request)
 
         unit = Unit(melt_quote.unit) if isinstance(melt_quote.unit, str) else (melt_quote.unit or Unit.sat)
 
