@@ -41,7 +41,7 @@ class FiatBackend(LightningBackend):
         http_client: Optional[httpx.AsyncClient] = None,
     ):
         if Unit.sat not in backend.supported_units:
-            raise Unsupported("wrapped backend must at least support sat")
+            raise Unsupported("The wrapped Lightning backend must support 'sat' unit")
 
         self.backend = backend
         self.crud = crud
@@ -56,7 +56,7 @@ class FiatBackend(LightningBackend):
             if c.lower() in Unit.__members__
         }
         if not fiat_units:
-            raise Unsupported("FIAT_BACKEND_UNITS empty or unknown codes")
+            raise Unsupported("No valid fiat units configured. Please check MINT_FIAT_BACKEND_UNITS setting")
 
         self._fiat_units = fiat_units
         self.supported_units = self.backend.supported_units.union(self._fiat_units)
@@ -106,7 +106,7 @@ class FiatBackend(LightningBackend):
                         self._sat_per_unit[u] = sats_per_btc / smallest_units_per_btc
 
                 if Unit.usd not in self._sat_per_unit:
-                    raise RuntimeError("USD/BTC quote missing")
+                    raise RuntimeError("Failed to get USD/BTC exchange rate from API")
 
                 self._rates_ts = time.time()
             except Exception as exc:
@@ -175,7 +175,7 @@ class FiatBackend(LightningBackend):
 
                 return resp
             except RuntimeError as e:
-                return InvoiceResponse(ok=False, error_message=str(e))
+                return InvoiceResponse(ok=False, error_message=f"Failed to create invoice: {str(e)}")
 
         return await self.backend.create_invoice(
             amount,
@@ -186,52 +186,62 @@ class FiatBackend(LightningBackend):
         )
 
     async def pay_invoice(self, quote: MeltQuote, fee_limit_msat: int, **kwargs) -> PaymentResponse:
-        if quote.unit in self._fiat_units:
-            # Get a fresh quote to validate exchange rate hasn't changed significantly
+        unit = Unit(quote.unit) if isinstance(quote.unit, str) else (quote.unit or Unit.sat)
+
+        if unit in self._fiat_units:
             try:
-                fresh_quote_request = PostMeltQuoteRequest(request=quote.request, unit=quote.unit)
+                fresh_quote_request = PostMeltQuoteRequest(request=quote.request, unit=unit.name)
                 fresh_quote = await self.get_payment_quote(fresh_quote_request)
 
-                if not fresh_quote.ok:
+                if hasattr(fresh_quote, 'error_message') and fresh_quote.error_message:
+                    logger.error(f"Failed to validate payment: {fresh_quote.error_message}")
                     return PaymentResponse(
                         result=PaymentResult.FAILED,
-                        error_message=f"Failed to validate payment: {fresh_quote.error_message}"
+                        error_message=f"Payment validation failed: {fresh_quote.error_message}"
                     )
 
-                # Check if the user provided enough fiat for current exchange rate
+                if fresh_quote.amount.unit != unit:
+                    logger.error(
+                        f"Unit mismatch: original quote unit {quote.unit} but current quote is for {fresh_quote.amount.unit}"
+                    )
+                    return PaymentResponse(
+                        result=PaymentResult.FAILED,
+                        error_message=f"Unit mismatch. Original: {quote.unit}, Current: {fresh_quote.amount.unit}. Please request a new quote."
+                    )
+
                 if quote.amount < fresh_quote.amount.amount:
                     logger.error(
-                        f"Exchange rate mismatch: original quote amount {quote.amount} {quote.unit} "
-                        f"but current rate requires {fresh_quote.amount.amount} {quote.unit}"
+                        f"Exchange rate mismatch: original quote amount {quote.amount} {unit.name} "
+                        f"but current rate requires {fresh_quote.amount.amount} {unit.name}"
                     )
                     return PaymentResponse(
                         result=PaymentResult.FAILED,
-                        error_message="Exchange rate has changed. Please get a new quote."
+                        error_message=f"Exchange rate has changed. Original: {quote.amount} {unit.name}, Current: {fresh_quote.amount.amount} {unit.name}. Please request a new quote."
                     )
 
-                # Convert the original fee_reserve from sats to fiat for comparison
-                original_fee_fiat = await self._sat_to_fiat(quote.fee_reserve, quote.unit)
-                if original_fee_fiat.amount < fresh_quote.fee.amount:
+                fee_reserve_sat = math.ceil(quote.fee_reserve / 1000)
+                original_total_fee_fiat = await self._sat_to_fiat(fee_reserve_sat, unit)
+                if original_total_fee_fiat.amount < fresh_quote.fee.amount:
                     logger.error(
-                        f"Fee increase: original fee reserve {original_fee_fiat.amount} {quote.unit} "
-                        f"but current fee is {fresh_quote.fee.amount} {quote.unit}"
+                        f"Fee increase: original fee reserve {original_total_fee_fiat.amount} {unit.name} "
+                        f"but current fee is {fresh_quote.fee.amount} {unit.name}"
                     )
                     return PaymentResponse(
                         result=PaymentResult.FAILED,
-                        error_message="Lightning fees have increased. Please get a new quote."
+                        error_message=f"Lightning network fees have increased. Original: {original_total_fee_fiat.amount} {unit.name}, Current: {fresh_quote.fee.amount} {unit.name}. Please request a new quote."
                     )
 
-                # Store the exchange rate and fee info for accounting
-                exchange_rate = self._sat_per_unit[quote.unit]
-                fee_percent = self._melt_fee[quote.unit]
+                await self._ensure_rates()
+                exchange_rate = self._sat_per_unit[unit]
+                fee_percent = self._melt_fee[unit]
             except Exception as e:
                 logger.error(f"Could not validate payment amount: {e}")
                 return PaymentResponse(
                     result=PaymentResult.FAILED,
-                    error_message=f"Failed to validate payment: {str(e)}"
+                    error_message=f"Payment validation error: {str(e)}"
                 )
 
-            sat_amount = await self._fiat_to_sat(Amount(quote.unit, quote.amount))
+            sat_amount = await self._fiat_to_sat(Amount(unit, quote.amount))
 
             sat_quote = MeltQuote(
                 quote=quote.quote,
@@ -256,19 +266,18 @@ class FiatBackend(LightningBackend):
 
             if resp.fee:
                 fee_sat = resp.fee.to(Unit.sat).amount
-                fiat_fee = await self._sat_to_fiat(fee_sat, quote.unit)
+                fiat_fee = await self._sat_to_fiat(fee_sat, unit)
                 resp.fee = fiat_fee
         else:
             resp = await self.backend.pay_invoice(quote, fee_limit_msat, **kwargs)
 
-        if resp.result == PaymentResult.SETTLED and quote.unit in self._fiat_units and self.db and self.crud:
+        if resp.result == PaymentResult.SETTLED and unit in self._fiat_units and self.db and self.crud:
             try:
-                # Use the values we already calculated above
-                fee_amount = int(math.ceil(quote.amount * fee_percent / 100))
+                fee_amount = resp.fee.amount if resp.fee else 0
 
                 await self.crud.store_unit_accounting_entry(
                     db=self.db,
-                    unit=quote.unit.name,
+                    unit=unit.name,
                     amount=quote.amount,
                     operation="melt",
                     exchange_rate=exchange_rate,
@@ -276,7 +285,7 @@ class FiatBackend(LightningBackend):
                     fee_percent=fee_percent,
                     fee_amount=fee_amount,
                 )
-                self._melted[quote.unit] += quote.amount
+                self._melted[unit] += quote.amount
             except Exception as e:
                 logger.error(f"Failed to record melt accounting: {e}")
 
@@ -293,38 +302,51 @@ class FiatBackend(LightningBackend):
             yield p
 
     async def get_payment_quote(self, melt_quote: PostMeltQuoteRequest) -> PaymentQuoteResponse:
-        ln_quote = await self.backend.get_payment_quote(melt_quote)
-        unit = melt_quote.unit or Unit.sat
+        ln_quote = await self.backend.get_payment_quote(
+            PostMeltQuoteRequest(
+                request=melt_quote.request,
+                unit="sat"
+            )
+        )
+
+        unit = Unit(melt_quote.unit) if isinstance(melt_quote.unit, str) else (melt_quote.unit or Unit.sat)
 
         if unit not in self._fiat_units:
-            return ln_quote
+                return ln_quote
 
         try:
-            # Get amounts in sats
             ln_amount_sat = ln_quote.amount.to(Unit.sat).amount
             ln_fee_sat = ln_quote.fee.to(Unit.sat).amount
 
             melt_fee_percent = self._melt_fee[unit]
             melt_fee_sat = int(math.ceil(ln_amount_sat * melt_fee_percent / 100))
 
-            total_fee_sat = ln_fee_sat + melt_fee_sat
+            total_amount_sat = ln_amount_sat + melt_fee_sat
 
-            total_amount_fiat = await self._sat_to_fiat(ln_amount_sat, unit)
-            total_fee_fiat = await self._sat_to_fiat(total_fee_sat, unit)
+            ln_fee_fiat = await self._sat_to_fiat(ln_fee_sat, unit)
 
-            return PaymentQuoteResponse(
-                ok=ln_quote.ok,
+            # DEBUG: Log the calculated fees
+            logger.info(
+                f"get_payment_quote: ln_amount_sat={ln_amount_sat}, ln_fee_sat={ln_fee_sat}, "
+                f"melt_fee_percent={melt_fee_percent}%, melt_fee_sat={melt_fee_sat}, "
+                f"total_amount_sat={total_amount_sat}"
+            )
+
+            total_amount_fiat = await self._sat_to_fiat(total_amount_sat, unit)
+
+            response = PaymentQuoteResponse(
                 checking_id=ln_quote.checking_id,
                 amount=total_amount_fiat,
-                fee=total_fee_fiat,
+                fee=ln_fee_fiat,
             )
+
+            return response
         except RuntimeError as e:
             return PaymentQuoteResponse(
-                ok=False,
                 checking_id=ln_quote.checking_id,
                 amount=Amount(unit, 0),
                 fee=Amount(unit, 0),
-                error_message=str(e),
+                error_message=f"Failed to calculate quote: {str(e)}",
             )
 
     # ───────────────────────── introspection ────────────────────────────
