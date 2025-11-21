@@ -1077,7 +1077,6 @@ class LedgerCrudSqlite(LedgerCrud):
 
         return MintBalanceLogEntry.from_row(row) if row else None
 
-<<<<<<< HEAD
     async def store_unit_accounting_entry(
         self,
         *,
@@ -1195,7 +1194,7 @@ class LedgerCrudSqlite(LedgerCrud):
         rows = await (conn or db).fetchall(query, params)
 
         return [dict(row) for row in rows]
-=======
+
     async def get_melt_quotes_by_checking_id(
         self,
         *,
@@ -1211,4 +1210,3 @@ class LedgerCrudSqlite(LedgerCrud):
             {"checking_id": checking_id},
         )
         return [MeltQuote.from_row(row) for row in results]  # type: ignore
->>>>>>> main
