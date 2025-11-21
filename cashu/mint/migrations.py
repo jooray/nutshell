@@ -1179,3 +1179,4 @@ async def m030_add_unit_accounting_table(db: Database):
         )
         await conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_unit_accounting_created ON {db.table_with_schema('unit_accounting')} (created);"
+        )
