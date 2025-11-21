@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cashu"
-version = "0.17.0"
+version = "0.18.2"
 description = "Ecash wallet and mint"
 authors = ["calle <callebtc@protonmail.com>"]
 license = "MIT"
@@ -68,6 +68,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.poetry.scripts]
 mint = "cashu.mint.main:main"
 cashu = "cashu.wallet.cli.cli:cli"
+mint-cli = "cashu.mint.management_rpc.cli.cli:cli"
 wallet-test = "tests.test_wallet:test"
 mint-tools = "cashu.mint.cli:cli"
 

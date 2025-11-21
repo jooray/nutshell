@@ -8,7 +8,7 @@ from pydantic import BaseSettings, Extra, Field, validator
 
 env = Env()
 
-VERSION = "0.17.0"
+VERSION = "0.18.2"
 
 
 def find_env_file():
@@ -65,7 +65,7 @@ class MintSettings(CashuSettings):
     mint_test_database: str = Field(default="test_data/test_mint")
     mint_max_secret_length: int = Field(default=1024)
 
-    mint_input_fee_ppk: int = Field(default=0)
+    mint_input_fee_ppk: int = Field(default=100)
     mint_disable_melt_on_error: bool = Field(default=False)
 
     mint_regular_tasks_interval_seconds: int = Field(
@@ -74,6 +74,9 @@ class MintSettings(CashuSettings):
         title="Regular tasks interval",
         description="Interval (in seconds) for running regular tasks like the invoice checker.",
     )
+
+    mint_retry_exponential_backoff_base_delay: int = Field(default=1)
+    mint_retry_exponential_backoff_max_delay: int = Field(default=10)
 
     # Custom units configuration
     mint_units: List[str] = Field(default=["sat"])
@@ -273,6 +276,30 @@ class MintInformation(CashuSettings):
     mint_info_tos_url: str = Field(default=None)
 
 
+class MintManagementRPCSettings(MintSettings):
+    mint_rpc_server_enable: bool = Field(
+        default=False, description="Enable the management RPC server."
+    )
+    mint_rpc_server_ca: str = Field(
+        default=None,
+        description="CA certificate file path for the management RPC server.",
+    )
+    mint_rpc_server_cert: str = Field(
+        default=None,
+        description="Server certificate file path for the management RPC server.",
+    )
+    mint_rpc_server_key: str = Field(default=None)
+    mint_rpc_server_addr: str = Field(
+        default="localhost", description="Address for the management RPC server."
+    )
+    mint_rpc_server_port: int = Field(
+        default=8086, gt=0, lt=65536, description="Port for the management RPC server."
+    )
+    mint_rpc_server_mutual_tls: bool = Field(
+        default=True, description="Require client certificates."
+    )
+
+
 class WalletSettings(CashuSettings):
     tor: bool = Field(default=False)
     socks_host: str = Field(default=None)  # deprecated
@@ -285,6 +312,7 @@ class WalletSettings(CashuSettings):
     wallet_name: str = Field(default="wallet")
     wallet_unit: str = Field(default="sat")
     wallet_use_deprecated_h2c: bool = Field(default=False)
+    wallet_verbose_requests: bool = Field(default=False)
     api_port: int = Field(default=4448)
     api_host: str = Field(default="127.0.0.1")
 
@@ -388,6 +416,7 @@ class Settings(
     AuthSettings,
     MintRedisCache,
     MintDeprecationFlags,
+    MintManagementRPCSettings,
     MintWatchdogSettings,
     MintSettings,
     MintInformation,

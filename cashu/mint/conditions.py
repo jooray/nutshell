@@ -1,4 +1,3 @@
-import hashlib
 import time
 from typing import List, Optional, Union
 
@@ -10,6 +9,7 @@ from ..core.errors import (
     TransactionError,
 )
 from ..core.htlc import HTLCSecret
+from ..core.nuts.nut14 import verify_htlc_spending_conditions
 from ..core.p2pk import (
     P2PKSecret,
     SigFlags,
@@ -75,56 +75,6 @@ class LedgerSpendingConditions:
             message_to_sign, pubkeys, proof.p2pksigs, n_sigs
         )
 
-    def _verify_htlc_spending_conditions(
-        self,
-        proof: Proof,
-        secret: HTLCSecret,
-        message_to_sign: Optional[str] = None,
-    ) -> bool:
-        """
-        Verify HTLC spending condition for a single input.
-
-        We return True:
-        - if the secret is not a HTLCSecret spending condition
-
-        We first verify the time lock. If the locktime has passed, we require
-        a valid signature if a 'refund' pubkey is present. If it isn't present,
-        anyone can spend.
-
-        We return True:
-        - if 'refund' pubkeys are present and a valid signature is provided for one of them
-        We raise an exception:
-        - if 'refund' but no valid signature is present
-
-
-        We then verify the hash lock. We require a valid preimage. We require a valid
-        signature if 'pubkeys' are present. If they aren't present, anyone who provides
-        a valid preimage can spend.
-
-        We raise an exception:
-        - if no preimage is provided
-        - if preimage does not match the hash lock in the secret
-
-        We return True:
-        - if 'pubkeys' are present and a valid signature is provided for one of them
-
-        We raise an exception:
-        - if 'pubkeys' are present but no valid signature is provided
-        """
-
-        htlc_secret = secret
-        # hash lock
-        if not proof.htlcpreimage:
-            raise TransactionError("no HTLC preimage provided")
-        # verify correct preimage (the hashlock) if the locktime hasn't passed
-        now = time.time()
-        if not htlc_secret.locktime or htlc_secret.locktime > now:
-            if not hashlib.sha256(
-                bytes.fromhex(proof.htlcpreimage)
-            ).digest() == bytes.fromhex(htlc_secret.data):
-                raise TransactionError("HTLC preimage does not match.")
-        return True
-
     def _verify_p2pk_signatures(
         self,
         message_to_sign: str,
@@ -177,7 +127,7 @@ class LedgerSpendingConditions:
                     break
 
         # check if we have enough valid signatures
-        if not n_pubkeys_with_valid_sigs >= n_sigs_required:
+        if n_pubkeys_with_valid_sigs < n_sigs_required:
             raise TransactionError(
                 f"signature threshold not met. {n_pubkeys_with_valid_sigs} <"
                 f" {n_sigs_required}."
@@ -213,7 +163,7 @@ class LedgerSpendingConditions:
         # HTLC
         if SecretKind(secret.kind) == SecretKind.HTLC:
             htlc_secret = HTLCSecret.from_secret(secret)
-            self._verify_htlc_spending_conditions(proof, htlc_secret)
+            verify_htlc_spending_conditions(proof)
             return self._verify_p2pk_sig_inputs(proof, htlc_secret)
 
         # no spending condition present
@@ -258,6 +208,20 @@ class LedgerSpendingConditions:
 
         return secrets.pop()
 
+    def _check_at_least_one_sig_all(self, proofs: List[Proof]) -> bool:
+        """
+        Verify that at least one secret has a SIG_ALL spending condition
+        """
+        for proof in proofs:
+            try:
+                secret = Secret.deserialize(proof.secret)
+                if secret.tags.get_tag("sigflag") == SigFlags.SIG_ALL.value:
+                    return True
+            except Exception:
+                pass
+
+        return False
+
     def _verify_sigall_spending_conditions(
         self,
         proofs: List[Proof],
@@ -268,10 +232,9 @@ class LedgerSpendingConditions:
         If sigflag==SIG_ALL in any proof.secret, perform a signature check on all
         inputs (proofs) and outputs (outputs) together.
 
-        # We return True
-        # - if not all proof.secret are Secret spending condition
-        # - if not all secrets are P2PKSecret spending condition
-        # - if not all signature.sigflag are SIG_ALL
+        We return True
+        - if we successfully validated the spending condition
+        - if all proof.secret are **NOT** SIG_ALL spending condition
 
         We raise an exception:
         - if one input is SIG_ALL but not all inputs are SIG_ALL
@@ -285,6 +248,11 @@ class LedgerSpendingConditions:
 
         We return True if we successfully validated the spending condition.
         """
+
+        # verify at least one secret is SIG_ALL
+        if not self._check_at_least_one_sig_all(proofs):
+            # it makes no sense to continue with a SIG_ALL check
+            return True
 
         # verify that all secrets are of the same kind
         try:

@@ -12,7 +12,16 @@ services:
       - MINT_LISTEN_HOST=0.0.0.0
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=TEST_PRIVATE_KEY
+      - MINT_UNITS=sat,usd,eur,czk,pgy,xmr
+      - MINT_UNIT_DECIMALS_PGY=0
+      - MINT_UNIT_DECIMALS_CZK=0
+      - MINT_FIAT_BACKEND_UNITS=usd,eur,czk,xmr
+      - FIAT_BACKEND_MINT_FEE_CZK=1
+      - FIAT_BACKEND_MELT_FEE_CZK=1
+      - MINT_DERIVATION_PATH_LIST=["m/0'/2'/0'","m/0'/3'/0'","m/0'/5'/0'"]
     command: ["poetry", "run", "mint"]
+    volumes:
+      - ./data/mint:/app/data/mint
   wallet:
     build:
       context: .

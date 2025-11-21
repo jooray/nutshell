@@ -37,6 +37,8 @@ settings.fakewallet_brr = True
 settings.fakewallet_delay_outgoing_payment = 0
 settings.fakewallet_delay_incoming_payment = 1
 settings.fakewallet_stochastic_invoice = False
+settings.lightning_fee_percent = 2.0
+settings.lightning_reserve_fee_min = 2000  # msat
 assert (
     settings.mint_test_database != settings.mint_database
 ), "Test database is the same as the main database"
@@ -53,6 +55,9 @@ settings.mint_input_fee_ppk = 0
 settings.db_connection_pool = True
 settings.mint_require_auth = False
 settings.mint_watchdog_enabled = False
+
+settings.mint_rpc_server_enable = True
+settings.mint_rpc_server_mutual_tls = False
 
 assert "test" in settings.cashu_dir
 shutil.rmtree(settings.cashu_dir, ignore_errors=True)

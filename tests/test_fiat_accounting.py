@@ -5,20 +5,21 @@ from cashu.core.base import Amount, Unit
 from cashu.core.db import Database
 from cashu.lightning.fiatbackend import FiatBackend
 from cashu.lightning.base import InvoiceResponse, PaymentResponse, PaymentResult
-from cashu.mint.crud import get_fiat_accounting_summary, store_fiat_accounting_entry
+from cashu.mint.crud import LedgerCrudSqlite
 
 
 @pytest.mark.asyncio
 async def test_store_and_retrieve_accounting_entry():
     """Test storing and retrieving fiat accounting entries"""
     db = Database("test", ":memory:")
+    crud = LedgerCrudSqlite()
 
     # Run migration
     from cashu.mint import migrations
-    await migrations.m028_add_fiat_accounting_table(db)
+    await migrations.m030_add_unit_accounting_table(db)
 
     # Store entry
-    await store_fiat_accounting_entry(
+    await crud.store_unit_accounting_entry(
         db=db,
         unit="usd",
         amount=10000,  # $100.00
@@ -30,7 +31,7 @@ async def test_store_and_retrieve_accounting_entry():
     )
 
     # Retrieve summary
-    summary = await get_fiat_accounting_summary(db)
+    summary = await crud.get_unit_accounting_summary(db=db)
 
     assert "usd" in summary
     assert summary["usd"]["minted"] == 10000
@@ -51,11 +52,12 @@ async def test_fiat_backend_records_mint_operation():
     )
 
     db = Database("test", ":memory:")
+    crud = LedgerCrudSqlite()
     from cashu.mint import migrations
-    await migrations.m028_add_fiat_accounting_table(db)
+    await migrations.m030_add_unit_accounting_table(db)
 
     # Create FiatBackend with mocked exchange rate
-    backend = FiatBackend(mock_ln_backend, db=db)
+    backend = FiatBackend(mock_ln_backend, db=db, crud=crud)
     backend._sat_per_unit = {Unit.usd: 0.00002}  # 1 sat = $0.00002
     backend._rates_ts = 9999999999  # Far future to skip rate fetch
     backend._fiat_units = {Unit.usd}
@@ -67,7 +69,7 @@ async def test_fiat_backend_records_mint_operation():
     await backend.create_invoice(amount)
 
     # Check accounting
-    summary = await get_fiat_accounting_summary(db)
+    summary = await crud.get_unit_accounting_summary(db=db)
     assert summary["usd"]["minted"] == 10000
     assert summary["usd"]["mint_fees"] == 100  # 1% of $100
 
@@ -86,11 +88,12 @@ async def test_fiat_backend_records_melt_operation():
     )
 
     db = Database("test", ":memory:")
+    crud = LedgerCrudSqlite()
     from cashu.mint import migrations
-    await migrations.m028_add_fiat_accounting_table(db)
+    await migrations.m030_add_unit_accounting_table(db)
 
     # Create FiatBackend
-    backend = FiatBackend(mock_ln_backend, db=db)
+    backend = FiatBackend(mock_ln_backend, db=db, crud=crud)
     backend._sat_per_unit = {Unit.usd: 0.00002}
     backend._rates_ts = 9999999999
     backend._fiat_units = {Unit.usd}
@@ -122,6 +125,6 @@ async def test_fiat_backend_records_melt_operation():
     await backend.pay_invoice(quote, 2000000)  # fee limit in msat
 
     # Check accounting
-    summary = await get_fiat_accounting_summary(db)
+    summary = await crud.get_unit_accounting_summary(db=db)
     assert summary["usd"]["melted"] == 10000
     assert summary["usd"]["melt_fees"] == 100
