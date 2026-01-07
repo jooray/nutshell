@@ -9,10 +9,8 @@ import httpx
 from loguru import logger
 
 from cashu.core.base import Amount, MeltQuote, Unit
-from cashu.core.db import Database
 from cashu.core.models import PostMeltQuoteRequest
 from cashu.core.settings import settings
-from cashu.mint.crud import LedgerCrud
 from .base import (
     Amount,
     InvoiceResponse,
@@ -35,8 +33,6 @@ class FiatBackend(LightningBackend):
     def __init__(
         self,
         backend: LightningBackend,
-        crud: LedgerCrud,
-        db: Optional[Database] = None,
         *,
         cache_seconds: int = 300,
         http_client: Optional[httpx.AsyncClient] = None,
@@ -45,8 +41,6 @@ class FiatBackend(LightningBackend):
             raise Unsupported("The wrapped Lightning backend must support 'sat' unit")
 
         self.backend = backend
-        self.crud = crud
-        self.db = db
         self._client = http_client or httpx.AsyncClient(timeout=10)
         self._cache_seconds = cache_seconds
 
@@ -78,10 +72,6 @@ class FiatBackend(LightningBackend):
         self._msat_per_unit: Dict[Unit, float] = {}
         self._rates_ts = 0.0
         self._rates_lock = asyncio.Lock()
-
-        # ─── accounting (optional introspection) ────────────────────────
-        self._minted = {u: 0 for u in self._fiat_units}
-        self._melted = {u: 0 for u in self._fiat_units}
 
     # ────────────────────────── FX helpers ───────────────────────────────
     async def _ensure_rates(self) -> None:
@@ -142,39 +132,15 @@ class FiatBackend(LightningBackend):
                 logger.info(f"Creating invoice for {amount.str()} with mint fee {self._mint_fee[amount.unit]}%")
                 fee_percent = self._mint_fee[amount.unit]
                 gross = int(math.ceil(amount.amount * (1 + fee_percent / 100)))
-                fee_amount = gross - amount.amount
                 msats = await self._fiat_to_msat(Amount(amount.unit, gross))
 
-                await self._ensure_rates()
-                exchange_rate = self._msat_per_unit[amount.unit] / 1000
-
-                resp = await self.backend.create_invoice(
+                return await self.backend.create_invoice(
                     Amount(Unit.msat, msats),
                     memo=memo,
                     description_hash=description_hash,
                     unhashed_description=unhashed_description,
                     **kwargs,
                 )
-                if resp.ok:
-                    self._minted[amount.unit] += amount.amount
-
-                    # Record in database if available
-                    if self.db and self.crud:
-                        try:
-                            await self.crud.store_unit_accounting_entry(
-                                db=self.db,
-                                unit=amount.unit.name,
-                                amount=amount.amount,
-                                operation="mint",
-                                exchange_rate=exchange_rate,
-                                sat_amount=msats // 1000,
-                                fee_percent=fee_percent,
-                                fee_amount=fee_amount,
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to record mint accounting: {e}")
-
-                return resp
             except RuntimeError as e:
                 return InvoiceResponse(ok=False, error_message=f"Failed to create invoice: {str(e)}")
 
@@ -238,10 +204,6 @@ class FiatBackend(LightningBackend):
                 # We don't need to check fee_reserve as the fiat amount already covers the maximum possible fee
                 # Any difference in actual vs estimated fee is absorbed by the mint
 
-                await self._ensure_rates()
-                exchange_rate = self._msat_per_unit[unit] / 1000
-                cashu_melt_fee_percent = self._melt_fee[unit]
-
                 msat_quote = MeltQuote(
                     quote=quote.quote,
                     method=quote.method,
@@ -266,29 +228,6 @@ class FiatBackend(LightningBackend):
                 if resp.fee:
                     paid_ln_fee_msat = resp.fee.to(Unit.msat).amount
                     resp.fee = await self._msat_to_fiat(paid_ln_fee_msat, unit)
-
-                if resp.result == PaymentResult.SETTLED and self.db and self.crud:
-                    try:
-                        # Principal amount is the fiat equivalent of the LN invoice amount
-                        principal_fiat_amount = await self._msat_to_fiat(current_ln_invoice_amount_msat, unit)
-
-                        # Cashu melt fee in fiat
-                        cashu_melt_fee_msat = int(math.ceil(current_ln_invoice_amount_msat * cashu_melt_fee_percent / 100))
-                        cashu_melt_fee_fiat = await self._msat_to_fiat(cashu_melt_fee_msat, unit)
-
-                        await self.crud.store_unit_accounting_entry(
-                            db=self.db,
-                            unit=unit.name,
-                            amount=principal_fiat_amount.amount,
-                            operation="melt",
-                            exchange_rate=exchange_rate,
-                            sat_amount=current_ln_invoice_amount_msat // 1000,
-                            fee_percent=cashu_melt_fee_percent,
-                            fee_amount=cashu_melt_fee_fiat.amount,
-                        )
-                        self._melted[unit] += principal_fiat_amount.amount
-                    except Exception as e:
-                        logger.error(f"Failed to record melt accounting for fiat unit {unit.name}: {e}")
 
             except Exception as e:
                 logger.error(f"Could not process fiat payment: {e}")
@@ -354,12 +293,3 @@ class FiatBackend(LightningBackend):
                 fee=Amount(unit, 0),
                 error_message=f"Failed to calculate quote: {str(e)}",
             )
-
-    # ───────────────────────── introspection ────────────────────────────
-    @property
-    def minted_totals(self) -> Dict[Unit, int]:
-        return self._minted.copy()
-
-    @property
-    def melted_totals(self) -> Dict[Unit, int]:
-        return self._melted.copy()

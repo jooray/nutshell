@@ -94,11 +94,11 @@ ledger = Ledger(
     crud=LedgerCrudSqlite(),
 )
 
-# Now configure fiat backends with the same database instance
+# Now configure fiat backends
 if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
     base_backend = backend_bolt11_sat
 
-    fiat_backend = FiatBackend(base_backend, crud=ledger.crud, db=mint_db)
+    fiat_backend = FiatBackend(base_backend)
 
     for unit_str in settings.mint_fiat_backend_units:
         try:
