@@ -32,7 +32,6 @@ for key, value in settings.dict().items():
     if key in [
         "mint_private_key",
         "mint_seed_decryption_key",
-        "nostr_private_key",
         "mint_lnbits_key",
         "mint_blink_key",
         "mint_strike_key",
@@ -54,7 +53,6 @@ Unit.init_custom_units()
 wallets_module = importlib.import_module("cashu.lightning")
 
 backends: Dict[Method, Dict[Unit, LightningBackend]] = {}
-
 if settings.mint_backend_bolt11_sat:
     backend_bolt11_sat = getattr(wallets_module, settings.mint_backend_bolt11_sat)(
         unit=Unit.sat
@@ -75,18 +73,14 @@ if settings.mint_backend_bolt11_eur:
         unit=Unit.eur
     )
     backends.setdefault(Method.bolt11, {})[Unit.eur] = backend_bolt11_eur
-
 if not backends:
     raise Exception("No backends are set.")
 
 if not settings.mint_private_key:
     raise Exception("No mint private key is set.")
 
-# Create the database instance once
-mint_db = Database("mint", settings.mint_database)
-
 ledger = Ledger(
-    db=mint_db,
+    db=Database("mint", settings.mint_database),
     seed=settings.mint_private_key,
     seed_decryption_key=settings.mint_seed_decryption_key,
     derivation_path=settings.mint_derivation_path,
@@ -94,12 +88,8 @@ ledger = Ledger(
     crud=LedgerCrudSqlite(),
 )
 
-# Now configure fiat backends
 if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
-    base_backend = backend_bolt11_sat
-
-    fiat_backend = FiatBackend(base_backend)
-
+    fiat_backend = FiatBackend(backend_bolt11_sat)
     for unit_str in settings.mint_fiat_backend_units:
         try:
             unit = Unit(unit_str.lower())
@@ -156,10 +146,14 @@ async def shutdown_mint():
     logger.info("Mint shutdown.")
     logger.remove()
 
+
 rpc_server = None
+
+
 async def start_management_rpc():
     global rpc_server
     rpc_server = await management_rpc.serve(copy(ledger))
+
 
 async def shutdown_management_rpc():
     if rpc_server:

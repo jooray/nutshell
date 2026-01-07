@@ -34,6 +34,7 @@ from ..core.errors import (
     LightningError,
     LightningPaymentFailedError,
     NotAllowedError,
+    QuoteAlreadyIssuedError,
     QuoteNotPaidError,
     QuoteSignatureInvalidError,
     TransactionAmountExceedsLimitError,
@@ -349,7 +350,7 @@ class Ledger(
                 f"Maximum mint amount is {settings.mint_max_mint_bolt11_sat} sat."
             )
         if settings.mint_bolt11_disable_mint:
-            raise NotAllowedError("Minting with bol11 is disabled.")
+            raise NotAllowedError("Minting with bolt11 is disabled.")
 
         unit, method = self._verify_and_get_unit_method(
             quote_request.unit, Method.bolt11.name
@@ -492,7 +493,7 @@ class Ledger(
         if quote.pending:
             raise TransactionError("Mint quote already pending.")
         if quote.issued:
-            raise TransactionError("Mint quote already issued.")
+            raise QuoteAlreadyIssuedError()
         if not quote.paid:
             raise QuoteNotPaidError()
 
@@ -1171,7 +1172,7 @@ class Ledger(
             Tuple[str, PublicKey, int, PublicKey, PrivateKey, PrivateKey]
         ] = []
         for output in outputs:
-            B_ = PublicKey(bytes.fromhex(output.B_), raw=True)
+            B_ = PublicKey(bytes.fromhex(output.B_))
             if output.id not in self.keysets:
                 raise TransactionError(f"keyset {output.id} not found")
             keyset = self.keysets[output.id]
@@ -1194,10 +1195,10 @@ class Ledger(
                 logger.trace(f"crud: _generate_promise storing promise for {amount}")
                 await self.crud.update_blinded_message_signature(
                     amount=amount,
-                    b_=B_.serialize().hex(),
-                    c_=C_.serialize().hex(),
-                    e=e.serialize(),
-                    s=s.serialize(),
+                    b_=B_.format().hex(),
+                    c_=C_.format().hex(),
+                    e=e.to_hex(),
+                    s=s.to_hex(),
                     db=self.db,
                     conn=conn,
                 )
@@ -1205,8 +1206,8 @@ class Ledger(
                 signature = BlindedSignature(
                     id=keyset_id,
                     amount=amount,
-                    C_=C_.serialize().hex(),
-                    dleq=DLEQ(e=e.serialize(), s=s.serialize()),
+                    C_=C_.format().hex(),
+                    dleq=DLEQ(e=e.to_hex(), s=s.to_hex()),
                 )
                 signatures.append(signature)
 
