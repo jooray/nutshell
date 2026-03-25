@@ -62,7 +62,7 @@ poetry run mint-cli          # Mint management CLI
 
 - **`lightning/`** - Lightning backend implementations
   - `base.py` - Abstract `LightningBackend` interface
-  - Backends: `lndrest.py`, `clnrest.py`, `lnbits.py`, `fake.py` (testing), `fiatbackend.py`
+  - Backends: `lndrest.py`, `clnrest.py`, `lnbits.py`, `fake.py` (testing), `unitsbackend.py`
 
 ### Key Patterns
 
@@ -99,7 +99,7 @@ The fiat backend allows the mint to issue tokens in fiat currencies (USD, EUR, C
 ### Fiat Backend Files (Primary Focus)
 
 **New files:**
-- `cashu/lightning/fiatbackend.py` - Main `FiatBackend` class wrapping any `LightningBackend` with FX conversion
+- `cashu/lightning/unitsbackend.py` - Main `UnitsBackend` class wrapping any `LightningBackend` with FX conversion
 - `tests/test_mint_fiat.py` - Fiat mint tests
 - `docs/fiat-backend.md` - Full documentation
 
@@ -114,7 +114,7 @@ The fiat backend allows the mint to issue tokens in fiat currencies (USD, EUR, C
 
 ### Key Concepts
 
-- `FiatBackend` wraps the sat-based Lightning backend and converts amounts at current FX rates
+- `UnitsBackend` wraps the sat-based Lightning backend and converts amounts at current FX rates
 - Fees are configured per-unit via `FIAT_BACKEND_MINT_FEE_XXX` and `FIAT_BACKEND_MELT_FEE_XXX`
 - Custom units need derivation paths in `MINT_DERIVATION_PATH_LIST` (see docs/fiat-backend.md)
 

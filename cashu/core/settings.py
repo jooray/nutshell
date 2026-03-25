@@ -86,6 +86,10 @@ class MintSettings(CashuSettings):
     mint_fiat_backend_units: List[str] = Field(default=[], env="MINT_FIAT_BACKEND_UNITS")
     mint_fiat_bolt11_backend: Optional[str] = Field(default=None, env="MINT_FIAT_BOLT11_BACKEND")
 
+    # Unitsd configuration
+    unitsd_url: str = Field(default="http://localhost:3339", env="UNITSD_URL")
+    unitsd_api_secret: Optional[str] = Field(default=None, env="UNITSD_API_SECRET")
+
     # Fiat backend fees (in percent)
     fiat_backend_mint_fee: Dict[str, float] = Field(default_factory=dict)
     fiat_backend_melt_fee: Dict[str, float] = Field(default_factory=dict)

@@ -15,7 +15,7 @@ from ..core.db import Database
 from ..core.migrations import migrate_databases
 from ..core.settings import settings
 from ..lightning.base import LightningBackend
-from ..lightning.fiatbackend import FiatBackend
+from ..lightning.unitsbackend import UnitsBackend
 from ..mint import migrations as mint_migrations
 from ..mint.auth import migrations as auth_migrations
 from ..mint.auth.server import AuthLedger
@@ -88,16 +88,8 @@ ledger = Ledger(
     crud=LedgerCrudSqlite(),
 )
 
-if settings.mint_fiat_backend_units and settings.mint_backend_bolt11_sat:
-    fiat_backend = FiatBackend(backend_bolt11_sat)
-    for unit_str in settings.mint_fiat_backend_units:
-        try:
-            unit = Unit(unit_str.lower())
-            if unit not in backends.get(Method.bolt11, {}):
-                backends.setdefault(Method.bolt11, {})[unit] = fiat_backend
-                logger.info(f"Initialized FiatBackend for unit: {unit.name}")
-        except (KeyError, ValueError) as e:
-            logger.warning(f"Unknown unit in MINT_FIAT_BACKEND_UNITS: {unit_str} - {e}")
+# UnitsBackend will be initialized during async startup (see start_mint function below)
+# We defer this to avoid asyncio.run() during module import
 
 # start auth ledger
 auth_ledger = AuthLedger(
@@ -134,9 +126,48 @@ async def start_auth():
 
 
 async def start_mint():
+    # Track derivation paths to activate (from unitsd)
+    unitsd_derivation_paths = []
+
+    # Initialize UnitsBackend if unitsd is configured
+    if settings.unitsd_url and settings.unitsd_api_secret and settings.mint_backend_bolt11_sat:
+        try:
+            logger.info(f"Querying unitsd at {settings.unitsd_url} for supported units")
+
+            # Create UnitsBackend and fetch units from unitsd
+            units_backend = UnitsBackend(backend_bolt11_sat)
+            unitsd_units = await units_backend.fetch_units_from_unitsd()
+
+            if unitsd_units:
+                # Register backend for each unit
+                for unit_code in units_backend.get_supported_unit_codes():
+                    try:
+                        unit = Unit(unit_code)
+                        if unit not in backends.get(Method.bolt11, {}):
+                            backends.setdefault(Method.bolt11, {})[unit] = units_backend
+                            logger.info(f"Initialized UnitsBackend for unit: {unit.name} (from unitsd)")
+                    except (KeyError, ValueError) as e:
+                        logger.warning(f"Unknown unit from unitsd: {unit_code} - {e}")
+
+                # Store derivation paths for keyset activation
+                unitsd_derivation_paths = units_backend.get_derivation_paths()
+                logger.info(f"Successfully initialized UnitsBackend with {len(unitsd_units)} units from unitsd")
+            else:
+                logger.warning("Unitsd returned no enabled currencies")
+
+        except Exception as e:
+            logger.error(f"Failed to connect to unitsd at {settings.unitsd_url}: {e}")
+            raise Exception(f"Cannot start mint without unitsd connection: {e}")
+
     await migrate_databases(ledger.db, mint_migrations)
     logger.info("Starting mint ledger.")
     await ledger.startup_ledger()
+
+    # Activate keysets for unitsd-managed units using their derivation paths
+    for derivation_path in unitsd_derivation_paths:
+        logger.info(f"Activating keyset for derivation path: {derivation_path}")
+        await ledger.activate_keyset(derivation_path=derivation_path)
+
     logger.info("Mint started.")
     # asyncio.create_task(rotate_keys())
 
