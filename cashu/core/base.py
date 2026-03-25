@@ -973,10 +973,10 @@ class MintKeyset:
                 " from derivation path"
             )
             try:
-                # derivation path format: m/purpose'/coin_type'/unit_index'
-                # unit_index is the last segment
+                # derivation path format: m/purpose'/coin_type'/counter'
+                # coin_type (index 2) determines the unit
                 path_parts = self.derivation_path.split("/")
-                unit_index = int(path_parts[-1].replace("'", ""))
+                unit_index = int(path_parts[2].replace("'", ""))
                 self.unit = Unit(unit_index)
                 logger.trace(f"Inferred unit: {self.unit.name}")
             except Exception:
