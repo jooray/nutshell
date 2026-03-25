@@ -1,136 +1,173 @@
 # Fiat Backend Configuration
 
-The Nutshell mint supports multiple currencies through a configurable fiat backend. This allows the mint to accept and issue tokens denominated in various fiat currencies while settling Lightning transactions in Bitcoin.
+The Nutshell mint supports multiple fiat currencies through the **unitsd** service. unitsd is a standalone daemon that manages exchange rates, fees, and hedging, communicating with the mint via REST API.
 
-## Configuration
+## Architecture
 
-### 1. Supported Units
-
-Define which units your mint supports:
-
-```bash
-# List of supported units (comma-separated)
-MINT_UNITS=sat,usd,eur,czk
-
-# Define decimal places for custom units (optional, defaults to 0)
-MINT_UNIT_DECIMALS_CZK=0
+```
+┌─────────────────┐         REST API          ┌─────────────┐
+│  Nutshell Mint   │ ◄────────────────────────► │   unitsd    │
+│  (UnitsBackend)  │   Bearer token auth        │  (FastAPI)  │
+└─────────────────┘                             └──────┬──────┘
+                                                       │
+                                              ┌────────┴────────┐
+                                              │   CoinGecko     │
+                                              │   (prices)      │
+                                              └─────────────────┘
 ```
 
-You also need to specify keysets, this is a bit hacky currently.
+- **unitsd** owns all pricing, fee configuration, and hedging logic
+- **Nutshell** queries unitsd for exchange rates and reports mint/melt operations
+- Communication uses a shared bearer token (`UNITSD_API_SECRET`)
 
-These are set currently:
+## Mint Configuration
 
-    sat = 0
-    msat = 1
-    usd = 2
-    eur = 3
-    btc = 4
-
-Next one that is not of these starts at 5. So for the above sat,usd,eur,czk mint units, you need to set
+### Required Environment Variables
 
 ```bash
-MINT_DERIVATION_PATH_LIST=["m/0'/2'/0'","m/0'/3'/0'","m/0'/5'/0'"]
+# List of units the mint supports (sat is always included)
+MINT_UNITS=usd,eur,czk
+
+# unitsd connection
+UNITSD_URL=http://localhost:3339
+UNITSD_API_SECRET=<shared-secret-with-unitsd>
+
+# Lightning backend (used for actual payments)
+MINT_BACKEND_BOLT11_SAT=LndRestWallet  # or CLNRestWallet, etc.
 ```
 
-(the path "m/0'/0'/0'" is included by default from MINT_DERIVATION_PATH).
+### How Unit Discovery Works
 
-### 2. Fiat Backend Units
+On startup, the mint:
 
-Specify which units should be handled by the fiat backend:
+1. Calls `GET /api/v1/units` on unitsd to discover available currencies
+2. Registers each fiat unit from `MINT_UNITS` that unitsd supports
+3. Generates keysets using the `path_index` returned by unitsd (e.g., usd=2, eur=3)
+4. Creates a `UnitsBackend` wrapper around the Lightning backend for each fiat unit
 
-```bash
-# Units that will use the fiat backend
-MINT_FIAT_BACKEND_UNITS=usd,eur,czk
+No manual `MINT_DERIVATION_PATH_LIST` configuration is needed -- derivation paths are assigned by unitsd and communicated via the API.
 
-# Optional: specify which Lightning backend to use for fiat conversions
-# If not set, uses the sat backend
-MINT_FIAT_BOLT11_BACKEND=sat
-```
+## unitsd Configuration
 
-### 3. Fee Configuration
+unitsd is configured via its own `.env` file. See `unitsd/.env.example` for all options.
 
-Set mint and melt fees for each fiat unit (in percent):
+Key settings:
 
 ```bash
-# Minting fees (when users deposit)
-FIAT_BACKEND_MINT_FEE_USD=1.0
-FIAT_BACKEND_MINT_FEE_EUR=1.0
-FIAT_BACKEND_MINT_FEE_CZK=0.8
+# API secret (must match UNITSD_API_SECRET in mint .env)
+UNITSD_API_SECRET=<shared-secret>
 
-# Melting fees (when users withdraw)
-FIAT_BACKEND_MELT_FEE_USD=1.0
-FIAT_BACKEND_MELT_FEE_EUR=1.0
-FIAT_BACKEND_MELT_FEE_CZK=0.8
+# Initial currencies to seed on first run
+UNITSD_INITIAL_CURRENCIES=usd,eur,czk
+
+# Fee configuration (percent)
+UNITSD_INITIAL_MINT_FEE_USD=1.0
+UNITSD_INITIAL_MELT_FEE_USD=1.0
+UNITSD_INITIAL_MINT_FEE_EUR=1.0
+UNITSD_INITIAL_MELT_FEE_EUR=1.0
+UNITSD_INITIAL_MINT_FEE_CZK=0.8
+UNITSD_INITIAL_MELT_FEE_CZK=0.8
+
+# Price cache duration (seconds)
+PRICE_CACHE_SECONDS=300
 ```
 
 ## How It Works
 
-1. **Exchange Rates**: The fiat backend fetches current BTC exchange rates from CoinGecko API
-2. **Fee Application**: Configured fees are applied on top of the exchange rate
-3. **Lightning Settlement**: All Lightning transactions are settled in Bitcoin (sats)
-4. **Token Issuance**: Nuts are issued in the requested fiat currency
-
-## Example Flow
-
 ### Minting (Deposit)
-1. User requests to mint $100 USD
-2. Fiat backend applies 1% fee = $101
-3. Converts to sats at current rate (e.g., 1 BTC = $50,000)
-4. Creates Lightning invoice for 202,000 sats
-5. Upon payment, issues tokens worth $100 USD
+
+1. User requests to mint 100 USD (= 10000 cents)
+2. Mint calls `GET /api/v1/quote/mint?amount=10000&unit=usd` on unitsd
+3. unitsd looks up BTC/USD rate, applies 1% fee, returns `amount_msat`
+4. Mint creates a Lightning invoice for that amount
+5. Upon payment, tokens worth 100 USD are issued
+6. Mint calls `POST /api/v1/callback/mint` to record the hedging position
 
 ### Melting (Withdrawal)
-1. User requests to melt $100 USD worth of tokens
-2. Fiat backend applies 1% fee = $101
-3. Converts to sats at current rate
-4. Pays Lightning invoice minus fees
-5. Burns the $100 USD tokens
+
+1. User submits a Lightning invoice to pay with USD tokens
+2. Mint calls `GET /api/v1/quote/melt?invoice_msat=X&unit=usd&ln_fee_msat=Y` on unitsd
+3. unitsd converts the msat amount to fiat, adds melt fee
+4. Mint burns the required USD tokens and pays the invoice
+5. Mint calls `POST /api/v1/callback/melt` to record the hedging position
+
+## API Endpoints (unitsd)
+
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/health` | GET | No | Health check |
+| `/api/v1/units` | GET | Yes | List enabled currencies |
+| `/api/v1/quote/mint` | GET | Yes | Get mint quote (fiat to msat) |
+| `/api/v1/quote/melt` | GET | Yes | Get melt quote (msat to fiat) |
+| `/api/v1/callback/mint` | POST | Yes | Report completed mint (hedging) |
+| `/api/v1/callback/melt` | POST | Yes | Report completed melt (hedging) |
+| `/api/v1/currencies` | CRUD | Yes | Manage currencies |
+| `/api/v1/positions` | GET | Yes | Query hedging positions |
 
 ## Adding New Currencies
 
-To add a new currency:
+### Via unitsd API
 
-1. Add it to `MINT_UNITS`
-2. Add it to `MINT_FIAT_BACKEND_UNITS` 
-3. Set decimal places if not 0: `MINT_UNIT_DECIMALS_XXX=N`
-4. Configure fees: `FIAT_BACKEND_MINT_FEE_XXX` and `FIAT_BACKEND_MELT_FEE_XXX`
-5. Don't forget to set correct MINT_DERIVATION_PATH_LIST
-
-Example for Japanese Yen:
 ```bash
-MINT_UNITS=sat,usd,eur,jpy
-MINT_FIAT_BACKEND_UNITS=usd,eur,jpy
-MINT_UNIT_DECIMALS_JPY=0
-FIAT_BACKEND_MINT_FEE_JPY=0.5
-FIAT_BACKEND_MELT_FEE_JPY=0.5
-MINT_DERIVATION_PATH_LIST=["m/0'/2'/0'","m/0'/3'/0'","m/0'/5'/0'"]
+curl -X POST http://localhost:3339/api/v1/currencies \
+  -H "Authorization: Bearer $UNITSD_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "gbp", "mint_fee_percent": 1.0, "melt_fee_percent": 1.0}'
 ```
+
+unitsd automatically assigns a stable `path_index` and fills in known metadata (name, decimals).
+
+### Then Update the Mint
+
+1. Add the new currency to `MINT_UNITS` in the mint's `.env`
+2. Restart the mint -- it will discover the new unit from unitsd and generate keysets
+
+### Reserved Path Indices
+
+These indices are reserved and match the nutshell `Unit` enum:
+
+| Code | path_index | Notes |
+|---|---|---|
+| sat | 0 | Built-in |
+| msat | 1 | Built-in |
+| usd | 2 | |
+| eur | 3 | |
+| btc | 4 | Built-in |
+| auth | 999 | NUT-22 |
+
+Custom currencies start at index 5 and are never reused (even after disabling).
+
+## Hedging
+
+unitsd records every mint and melt operation as a position. The positions summary shows net exposure per currency:
+
+```bash
+curl http://localhost:3339/api/v1/positions/summary \
+  -H "Authorization: Bearer $UNITSD_API_SECRET"
+```
+
+The v1.0 hedging backend is database-only (position tracking). Future versions may integrate with exchange APIs for automatic hedging.
 
 ## Limitations
 
-- Exchange rates are cached for 5 minutes by default
-- Requires internet connection to fetch exchange rates
-- USD rate must be available
-- Does not support currencies which don't have coingecko backend
+- Exchange rates are cached for 5 minutes by default (configurable via `PRICE_CACHE_SECONDS`)
+- Requires internet connection for CoinGecko price fetches
+- New currencies require a mint restart (v1.0 limitation, planned for v1.1)
+- The mint fails fast if unitsd is unreachable (no fallback to stale prices)
 
-## Decimals and support in wallets
+## Wallet Compatibility
 
-Cashu.me wallet discovers the units automatically, but since there's no way to communicate decimals, it
-will only work if decimals=0. Otherwise it would need to be hardcoded in the client. Notably, swiss franc with
-cents would be a problem, you would need to round to full franks.
+- **Cashu.me**: Discovers units automatically via NUT-06, but decimals must be 0 for unknown currencies
+- **Minibits**: Custom currencies are not yet discovered automatically
 
-Minibits does not support custom currencies, they are hardcoded. They should be discovered.
+## Running Tests
 
-## Further development
+```bash
+# unitsd tests (no network calls)
+cd unitsd
+poetry run pytest tests/ --ignore=tests/test_price_sources.py -v
 
-- Better and more resilient exchange rate API
-- Some mechanism to drive the hedging of the exchange rate
-  - Either regular output about the number of minted tokens adjusts the position (local fluctuations are covered by fees)
-  - Or only premint tokens and exchange
-- Add support for a non-fiat backing backend.
-  - To have XMR in the backend. This quickly turns into an exchange, or instant XMR-denominated payments without needing for blockchain
-    confirmations (you mint the tokens, wait and then you can use them immediately for eCash payments or through lightning)
-  - Or a ticket to an event. It can have static mint quote and disabled melt quote.
-  - Or a gift certificate to use with a proxynut service that is not meltable to lightning. "Here are some credits to try our service", but we don't want the users to cash them out through lightning.
-
-I did not even try to run the tests yet.
+# Nutshell fiat backend tests
+cd nutshell
+poetry run pytest tests/test_mint_fiat.py -v
+```
