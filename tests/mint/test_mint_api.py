@@ -49,7 +49,7 @@ async def test_info(ledger: Ledger):
     info = GetInfoResponse(**response.json())
     assert info.nuts
     assert info.nuts[MINT_NUT]["disabled"] is False
-    setting = MintMethodSetting.parse_obj(info.nuts[MINT_NUT]["methods"][0])
+    setting = MintMethodSetting.model_validate(info.nuts[MINT_NUT]["methods"][0])
     assert setting.method == "bolt11"
     assert setting.unit == "sat"
     assert setting.options
@@ -70,10 +70,13 @@ async def test_api_keys(ledger: Ledger):
             {
                 "id": keyset.id,
                 "unit": keyset.unit.name,
+                "active": keyset.active,
+                "input_fee_ppk": keyset.input_fee_ppk,
                 "keys": {
                     str(k): v.format().hex()
                     for k, v in keyset.public_keys.items()  # type: ignore
                 },
+                "final_expiry": keyset.final_expiry,
             }
             for keyset in ledger.keysets.values()
         ]
@@ -92,13 +95,15 @@ async def test_api_keysets(ledger: Ledger):
     expected = {
         "keysets": [
             {
-                "id": "009a1f293253e41e",
+                "final_expiry": None,
+                "id": "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc",
                 "unit": "sat",
                 "active": True,
                 "input_fee_ppk": 0,
             },
             {
-                "id": "00c074b96c7e2b0e",
+                "final_expiry": None,
+                "id": "01dadff4bbb5719ea6119c6b134d79cadfdd49b7483ca4b422a5e9fbdadbb32006",
                 "unit": "usd",
                 "active": True,
                 "input_fee_ppk": 0,
@@ -114,17 +119,20 @@ async def test_api_keysets(ledger: Ledger):
     reason="settings.debug_mint_only_deprecated is set",
 )
 async def test_api_keyset_keys(ledger: Ledger):
-    response = httpx.get(f"{BASE_URL}/v1/keys/009a1f293253e41e")
+    response = httpx.get(f"{BASE_URL}/v1/keys/01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc")
     assert response.status_code == 200, f"{response.url} {response.status_code}"
     assert ledger.keyset.public_keys
     expected = {
         "keysets": [
             {
-                "id": "009a1f293253e41e",
+                "final_expiry": None,
+                "id": "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc",
                 "unit": "sat",
+                "active": True,
+                "input_fee_ppk": 0,
                 "keys": {
                     str(k): v.format().hex()
-                    for k, v in ledger.keysets["009a1f293253e41e"].public_keys.items()  # type: ignore
+                    for k, v in ledger.keysets["01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"].public_keys.items()  # type: ignore
                 },
             }
         ]
@@ -138,17 +146,20 @@ async def test_api_keyset_keys(ledger: Ledger):
     reason="settings.debug_mint_only_deprecated is set",
 )
 async def test_api_keyset_keys_old_keyset_id(ledger: Ledger):
-    response = httpx.get(f"{BASE_URL}/v1/keys/009a1f293253e41e")
+    response = httpx.get(f"{BASE_URL}/v1/keys/01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc")
     assert response.status_code == 200, f"{response.url} {response.status_code}"
     assert ledger.keyset.public_keys
     expected = {
         "keysets": [
             {
-                "id": "009a1f293253e41e",
+                "final_expiry": None,
+                "id": "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc",
                 "unit": "sat",
+                "active": True,
+                "input_fee_ppk": 0,
                 "keys": {
                     str(k): v.format().hex()
-                    for k, v in ledger.keysets["009a1f293253e41e"].public_keys.items()  # type: ignore
+                    for k, v in ledger.keysets["01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"].public_keys.items()  # type: ignore
                 },
             }
         ]
@@ -170,7 +181,7 @@ async def test_swap(ledger: Ledger, wallet: Wallet):
     outputs, rs = wallet._construct_outputs([32, 32], secrets, rs)
     # outputs = wallet._construct_outputs([32, 32], ["a", "b"], ["c", "d"])
     inputs_payload = [p.to_dict() for p in wallet.proofs]
-    outputs_payload = [o.dict() for o in outputs]
+    outputs_payload = [o.model_dump() for o in outputs]
     payload = {"inputs": inputs_payload, "outputs": outputs_payload}
     response = httpx.post(f"{BASE_URL}/v1/swap", json=payload, timeout=None)
     assert response.status_code == 200, f"{response.url} {response.status_code}"
@@ -178,7 +189,7 @@ async def test_swap(ledger: Ledger, wallet: Wallet):
     assert len(result["signatures"]) == 2
     assert result["signatures"][0]["amount"] == 32
     assert result["signatures"][1]["amount"] == 32
-    assert result["signatures"][0]["id"] == "009a1f293253e41e"
+    assert result["signatures"][0]["id"] == "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"
     assert result["signatures"][0]["dleq"]
     assert "e" in result["signatures"][0]["dleq"]
     assert "s" in result["signatures"][0]["dleq"]
@@ -257,7 +268,7 @@ async def test_mint(ledger: Ledger, wallet: Wallet):
     outputs, rs = wallet._construct_outputs([32, 32], secrets, rs)
     assert mint_quote.privkey
     signature = nut20.sign_mint_quote(mint_quote.quote, outputs, mint_quote.privkey)
-    outputs_payload = [o.dict() for o in outputs]
+    outputs_payload = [o.model_dump() for o in outputs]
     response = httpx.post(
         f"{BASE_URL}/v1/mint/bolt11",
         json={
@@ -272,7 +283,7 @@ async def test_mint(ledger: Ledger, wallet: Wallet):
     assert len(result["signatures"]) == 2
     assert result["signatures"][0]["amount"] == 32
     assert result["signatures"][1]["amount"] == 32
-    assert result["signatures"][0]["id"] == "009a1f293253e41e"
+    assert result["signatures"][0]["id"] == "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"
     assert result["signatures"][0]["dleq"]
     assert "e" in result["signatures"][0]["dleq"]
     assert "s" in result["signatures"][0]["dleq"]
@@ -303,7 +314,7 @@ async def test_mint_bolt11_no_signature(ledger: Ledger, wallet: Wallet):
     await pay_if_regtest(result["request"])
     secrets, rs, derivation_paths = await wallet.generate_secrets_from_to(10000, 10001)
     outputs, rs = wallet._construct_outputs([32, 32], secrets, rs)
-    outputs_payload = [o.dict() for o in outputs]
+    outputs_payload = [o.model_dump() for o in outputs]
     response = httpx.post(
         f"{BASE_URL}/v1/mint/bolt11",
         json={
@@ -433,7 +444,7 @@ async def test_melt_internal(ledger: Ledger, wallet: Wallet):
     # outputs for change
     secrets, rs, derivation_paths = await wallet.generate_n_secrets(1)
     outputs, rs = wallet._construct_outputs([2], secrets, rs)
-    outputs_payload = [o.dict() for o in outputs]
+    outputs_payload = [o.model_dump() for o in outputs]
 
     response = httpx.post(
         f"{BASE_URL}/v1/melt/bolt11",
@@ -495,7 +506,7 @@ async def test_melt_external(ledger: Ledger, wallet: Wallet):
     # outputs for change
     secrets, rs, derivation_paths = await wallet.generate_n_secrets(1)
     outputs, rs = wallet._construct_outputs([2], secrets, rs)
-    outputs_payload = [o.dict() for o in outputs]
+    outputs_payload = [o.model_dump() for o in outputs]
 
     response = httpx.post(
         f"{BASE_URL}/v1/melt/bolt11",
@@ -541,10 +552,10 @@ async def test_api_check_state(ledger: Ledger):
     payload = PostCheckStateRequest(Ys=["asdasdasd", "asdasdasd1"])
     response = httpx.post(
         f"{BASE_URL}/v1/checkstate",
-        json=payload.dict(),
+        json=payload.model_dump(),
     )
     assert response.status_code == 200, f"{response.url} {response.status_code}"
-    response = PostCheckStateResponse.parse_obj(response.json())
+    response = PostCheckStateResponse.model_validate(response.json())
     assert response
     assert len(response.states) == 2
     assert response.states[0].state.unspent
@@ -571,13 +582,13 @@ async def test_api_restore(ledger: Ledger, wallet: Wallet):
     payload = PostRestoreRequest(outputs=outputs)
     response = httpx.post(
         f"{BASE_URL}/v1/restore",
-        json=payload.dict(),
+        json=payload.model_dump(),
     )
     data = response.json()
     assert "signatures" in data
     assert "outputs" in data
     assert response.status_code == 200, f"{response.url} {response.status_code}"
-    response = PostRestoreResponse.parse_obj(response.json())
+    response = PostRestoreResponse.model_validate(response.json())
     assert response
     assert response
     assert len(response.signatures) == 1

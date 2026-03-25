@@ -152,12 +152,18 @@ class MintManagementRPC(management_pb2_grpc.MintServicer):
         # upon a restar (it will activate a new keyset with the standard max order)
         if request.max_order:
             logger.warning(f"Ignoring custom max_order of 2**{request.max_order}. This functionality is restricted.")
-        new_keyset = await self.ledger.rotate_next_keyset(Unit[request.unit], input_fee_ppk=request.input_fee_ppk)
+        logger.debug(f"{request.final_expiry = }")
+        new_keyset = await self.ledger.rotate_next_keyset(
+            Unit[request.unit],
+            input_fee_ppk=request.input_fee_ppk,
+            final_expiry=request.final_expiry
+        )
         return management_pb2.RotateNextKeysetResponse(
             id=new_keyset.id,
             unit=str(new_keyset.unit),
             max_order=new_keyset.amounts[-1].bit_length(), # Neat trick to get log_2(last_amount) + 1
-            input_fee_ppk=new_keyset.input_fee_ppk
+            input_fee_ppk=new_keyset.input_fee_ppk,
+            final_expiry=new_keyset.final_expiry,
         )
 
     async def UpdateLightningFee(self, request, _):
@@ -205,8 +211,8 @@ async def serve(ledger: Ledger):
         logger.info(f"Starting mTLS Management RPC service on {host}:{port}")
         # Load server credentials
         server_credentials = grpc.ssl_server_credentials(
-            ((open(mint_rpc_key_path, 'rb').read(), open(mint_rpc_cert_path, 'rb').read()),),
-            root_certificates=open(mint_rpc_ca_path, 'rb').read(),
+            ((open(mint_rpc_key_path, 'rb').read(), open(mint_rpc_cert_path, 'rb').read()),), # type: ignore
+            root_certificates=open(mint_rpc_ca_path, 'rb').read(), # type: ignore
             require_client_auth=True,
         )
         server.add_secure_port(f"{host}:{port}", server_credentials)

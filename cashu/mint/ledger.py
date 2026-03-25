@@ -157,12 +157,18 @@ class Ledger(
             await self.activate_keyset(derivation_path=derivation_path)
 
     async def _run_regular_tasks(self) -> None:
-        try:
-            await self._check_pending_proofs_and_melt_quotes()
-            await asyncio.sleep(settings.mint_regular_tasks_interval_seconds)
-        except Exception as e:
-            logger.error(f"Ledger regular task failed: {e}")
-            await asyncio.sleep(60)
+        """
+        Runs periodic ledger maintenance tasks forever.
+        This function intentionally loops forever and is designed to be scheduled as a Task.
+        """
+        logger.info("Starting ledger regular tasks loop")
+        while True:
+            try:
+                await self._check_pending_proofs_and_melt_quotes()
+                await asyncio.sleep(settings.mint_regular_tasks_interval_seconds)
+            except Exception as e:
+                logger.error(f"Ledger regular task failed: {e}")
+                await asyncio.sleep(60)
 
     async def _check_backends(self) -> None:
         for method in self.backends:
@@ -504,7 +510,7 @@ class Ledger(
                 raise TransactionError("quote unit does not match output unit")
             if not quote.amount == sum_amount_outputs:
                 raise TransactionError("amount to mint does not match quote amount")
-            if quote.expiry and quote.expiry > int(time.time()):
+            if quote.expiry and quote.expiry < int(time.time()):
                 raise TransactionError("quote expired")
             if not self._verify_mint_quote_witness(quote, outputs, signature):
                 raise QuoteSignatureInvalidError()
@@ -669,7 +675,7 @@ class Ledger(
             created_time=int(time.time()),
             expiry=expiry,
         )
-        await self.crud.store_melt_quote(quote=quote, db=self.db)
+        await self.db_write._store_melt_quote(quote)
         await self.events.submit(quote)
 
         return PostMeltQuoteResponse(

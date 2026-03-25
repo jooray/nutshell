@@ -1,4 +1,3 @@
-import asyncio
 import functools
 import json
 
@@ -20,7 +19,6 @@ class RedisCache:
             if settings.mint_redis_cache_url is None:
                 raise CashuError("Redis cache url not provided")
             self.redis = from_url(settings.mint_redis_cache_url)
-            asyncio.create_task(self.test_connection())
 
     async def test_connection(self):
         # PING
@@ -46,7 +44,7 @@ class RedisCache:
             @functools.wraps(func)
             async def wrapper(request: Request, payload: BaseModel):
                 logger.trace(f"cache wrapper on route {func.__name__}")
-                key = request.url.path + payload.json()
+                key = request.url.path + payload.model_dump_json()
                 logger.trace(f"KEY: {key}")
                 # Check if we have a value under this key
                 if await self.redis.exists(key):
@@ -57,7 +55,7 @@ class RedisCache:
                     else:
                         raise Exception(f"Found no cached response for key {key}")
                 result = await func(request, payload)
-                await self.redis.set(name=key, value=result.json(), ex=settings.mint_redis_cache_ttl)
+                await self.redis.set(name=key, value=result.model_dump_json(), ex=settings.mint_redis_cache_ttl)
                 return result
 
             return wrapper

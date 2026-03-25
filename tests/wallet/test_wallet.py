@@ -1,4 +1,5 @@
 import copy
+from types import SimpleNamespace
 from typing import List, Union
 
 import pytest
@@ -100,7 +101,7 @@ async def test_get_keys(wallet1: Wallet):
     keyset = keysets[0]
     assert keyset.id is not None
     # assert keyset.id_deprecated == "eGnEWtdJ0PIM"
-    assert keyset.id == "009a1f293253e41e"
+    assert keyset.id == "01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"
     assert isinstance(keyset.id, str)
     assert len(keyset.id) > 0
 
@@ -461,7 +462,7 @@ async def test_split_race_condition(wallet1: Wallet):
             wallet1.split(wallet1.proofs, 20),
             wallet1.split(wallet1.proofs, 20),
         ),
-        ["proofs are pending.", "already spent."],
+        ["proofs are pending.", "already spent"],
     )
 
 
@@ -545,11 +546,47 @@ async def test_token_state(wallet1: Wallet):
 @pytest.mark.asyncio
 async def testactivate_keyset_specific_keyset(wallet1: Wallet):
     await wallet1.activate_keyset()
-    assert list(wallet1.keysets.keys()) == ["009a1f293253e41e"]
+    assert list(wallet1.keysets.keys()) == ["01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc"]
     await wallet1.activate_keyset(keyset_id=wallet1.keyset_id)
-    await wallet1.activate_keyset(keyset_id="009a1f293253e41e")
+    await wallet1.activate_keyset(keyset_id="01d8a63077d0a51f9855f066409782ffcb322dc8a2265291865221ed06c039f6bc")
     # expect deprecated keyset id to be present
     await assert_err(
         wallet1.activate_keyset(keyset_id="nonexistent"),
         KeysetNotFoundError("nonexistent"),
     )
+
+def make_dummy_response(status_code: int, json_data=None):
+    def raise_for_status():
+        if status_code >= 400:
+            raise Exception(f"HTTP {status_code}")
+
+    return SimpleNamespace(
+        status_code=status_code,
+        json=lambda: json_data or {},
+        raise_for_status=raise_for_status,
+    )
+
+@pytest.mark.asyncio
+async def test_raise_on_unsupported_version_404(wallet1: Wallet):
+    """
+    If the mint returns 404 for an endpoint, the wallet should raise
+    a clear unsupported-version exception.
+    """
+    resp = make_dummy_response(404)
+
+    with pytest.raises(Exception) as excinfo:
+        wallet1.raise_on_unsupported_version(resp, "GET /v1/keys")
+
+    assert "does not support endpoint GET /v1/keys" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_raise_on_unsupported_version_non_404(wallet1: Wallet):
+    """
+    For non-404 responses, the function should delegate to
+    raise_on_error_request and NOT raise for a valid response.
+    """
+    resp = make_dummy_response(200, {})
+
+    # should not raise
+    wallet1.raise_on_unsupported_version(resp, "GET /v1/keys")

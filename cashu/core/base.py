@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Union
 
 import cbor2
 from loguru import logger
-from pydantic import BaseModel, root_validator
+from pydantic import BaseModel, ConfigDict, RootModel, model_validator
 from sqlalchemy import RowMapping
 
 from cashu.core.json_rpc.base import JSONRPCSubscriptionKinds
@@ -24,6 +24,7 @@ from .crypto.keys import (
     derive_keys_deprecated_pre_0_15,
     derive_keyset_id,
     derive_keyset_id_deprecated,
+    derive_keyset_id_v2,
     derive_pubkeys,
 )
 from .crypto.secp import PrivateKey, PublicKey
@@ -67,12 +68,11 @@ class ProofState(LedgerEvent):
     state: ProofSpentState
     witness: Optional[str] = None
 
-    @root_validator()
-    def check_witness(cls, values):
-        state, witness = values.get("state"), values.get("witness")
-        if witness is not None and state != ProofSpentState.spent:
+    @model_validator(mode="after")
+    def check_witness(self):
+        if self.witness is not None and self.state != ProofSpentState.spent:
             raise ValueError('Witness can only be set if the spent state is "SPENT"')
-        return values
+        return self
 
     @property
     def identifier(self) -> str:
@@ -134,8 +134,8 @@ class Proof(BaseModel):
     reserved: Union[None, bool] = False
     # unique ID of send attempt, used for grouping pending tokens in the wallet
     send_id: Union[None, str] = ""
-    time_created: Union[None, str] = ""
-    time_reserved: Union[None, str] = ""
+    time_created: Union[None, str, int] = ""
+    time_reserved: Union[None, str, int] = ""
     derivation_path: Union[None, str] = ""  # derivation path of the proof
     mint_id: Union[None, str] = (
         None  # holds the id of the mint operation that created this proof
@@ -168,7 +168,7 @@ class Proof(BaseModel):
         # optional fields
         if include_dleq:
             assert self.dleq, "DLEQ proof is missing"
-            return_dict["dleq"] = self.dleq.dict()  # type: ignore
+            return_dict["dleq"] = self.dleq.model_dump()  # type: ignore
 
         if self.witness:
             return_dict["witness"] = self.witness
@@ -217,9 +217,9 @@ class Proof(BaseModel):
             return None
 
 
-class Proofs(BaseModel):
+class Proofs(RootModel):
     # NOTE: not used in Pydantic validation
-    __root__: List[Proof]
+    root: List[Proof]
 
 
 class BlindedMessage(BaseModel):
@@ -868,6 +868,7 @@ class MintKeyset:
     version: Optional[str] = None
     amounts: List[int]
     balance: int
+    final_expiry: Optional[int] = None  # NEW: Final expiry timestamp for keyset v2
 
     duplicate_keyset_id: Optional[str] = None  # BACKWARDS COMPATIBILITY < 0.15.0
 
@@ -889,6 +890,7 @@ class MintKeyset:
         id: str = "",
         balance: int = 0,
         fees_paid: int = 0,
+        final_expiry: Optional[int] = None,
     ):
         DEFAULT_SEED = "supersecretprivatekey"
         if seed == DEFAULT_SEED:
@@ -924,6 +926,7 @@ class MintKeyset:
         self.balance = balance
         self.fees_paid = fees_paid
         self.input_fee_ppk = input_fee_ppk or 0
+        self.final_expiry = final_expiry
 
         if self.input_fee_ppk < 0:
             raise Exception("Input fee must be non-negative.")
@@ -978,6 +981,7 @@ class MintKeyset:
             amounts=json.loads(row["amounts"]),
             balance=row["balance"],
             fees_paid=row["fees_paid"],
+            final_expiry=row["final_expiry"],
         )
 
     @property
@@ -1021,12 +1025,33 @@ class MintKeyset:
             )
             self.public_keys = derive_pubkeys(self.private_keys, self.amounts)  # type: ignore
             self.id = id_in_db or derive_keyset_id_deprecated(self.public_keys)  # type: ignore
+        elif self.version_tuple < (0, 20):
+            self.private_keys = derive_keys(
+                self.seed, self.derivation_path, self.amounts
+            )
+            self.public_keys = derive_pubkeys(self.private_keys, self.amounts)  # type: ignore
+            
+            if id_in_db:
+                # If loading from DB, preserve existing ID
+                self.id = id_in_db
+            else:
+                assert self.public_keys is not None
+                self.id = derive_keyset_id(self.public_keys)
+                logger.info(f"Generated keyset v1 ID: {self.id}")
         else:
             self.private_keys = derive_keys(
                 self.seed, self.derivation_path, self.amounts
             )
             self.public_keys = derive_pubkeys(self.private_keys, self.amounts)  # type: ignore
-            self.id = id_in_db or derive_keyset_id(self.public_keys)  # type: ignore
+            
+            # KEYSETS V2: Use new keyset ID derivation
+            if id_in_db:
+                # If loading from DB, preserve existing ID
+                self.id = id_in_db
+            else:
+                assert self.public_keys is not None
+                self.id = derive_keyset_id_v2(self.public_keys, self.unit.name, self.final_expiry, self.input_fee_ppk)
+                logger.info(f"Generated keyset v2 ID: {self.id}")
 
 
 # ------- TOKEN -------
@@ -1090,8 +1115,7 @@ class TokenV3(Token):
     _memo: Optional[str] = None
     _unit: str = "sat"
 
-    class Config:
-        allow_population_by_field_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
     @property
     def proofs(self) -> List[Proof]:
@@ -1348,7 +1372,7 @@ class TokenV4(Token):
         return cls(t=cls.t, d=cls.d, m=cls.m, u=cls.u)
 
     def serialize_to_dict(self, include_dleq=False):
-        return_dict: Dict[str, Any] = dict(t=[t.dict() for t in self.t])
+        return_dict: Dict[str, Any] = dict(t=[t.model_dump() for t in self.t])
         # strip dleq if needed
         if not include_dleq:
             for token in return_dict["t"]:
@@ -1455,10 +1479,10 @@ class AuthProof(BaseModel):
         return cls(id=proof.id, secret=proof.secret, C=proof.C)
 
     def to_base64(self):
-        serialize_dict = self.dict()
+        serialize_dict = self.model_dump()
         serialize_dict.pop("amount", None)
         return (
-            self.prefix + base64.b64encode(json.dumps(serialize_dict).encode()).decode()
+            self.prefix + base64.urlsafe_b64encode(json.dumps(serialize_dict).encode()).decode().rstrip("=")
         )
 
     @classmethod
@@ -1467,7 +1491,9 @@ class AuthProof(BaseModel):
             f"Token prefix not valid. Expected {cls.prefix}."
         )
         base64_str = base64_str[len(cls.prefix) :]
-        return cls.parse_obj(json.loads(base64.b64decode(base64_str).decode()))
+        # Re-add padding if stripped, as urlsafe_b64decode requires it
+        padded = base64_str + "=" * (-len(base64_str) % 4)
+        return cls.model_validate(json.loads(base64.urlsafe_b64decode(padded).decode()))
 
     def to_proof(self):
         return Proof(id=self.id, secret=self.secret, C=self.C, amount=self.amount)
@@ -1476,7 +1502,7 @@ class AuthProof(BaseModel):
 class WalletMint(BaseModel):
     url: str
     info: str
-    updated: Optional[str] = None
+    updated: Optional[Union[str, int]] = None
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
     username: Optional[str] = None

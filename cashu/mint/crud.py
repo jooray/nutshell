@@ -623,7 +623,9 @@ class LedgerCrudSqlite(LedgerCrud):
                 ),
                 "paid_time": db.to_timestamp(
                     db.timestamp_from_seconds(quote.paid_time) or ""
-                ),
+                )
+                if quote.paid_time
+                else None,
                 "pubkey": quote.pubkey or "",
             },
         )
@@ -691,7 +693,9 @@ class LedgerCrudSqlite(LedgerCrud):
                 "state": quote.state.value,
                 "paid_time": db.to_timestamp(
                     db.timestamp_from_seconds(quote.paid_time) or ""
-                ),
+                )
+                if quote.paid_time
+                else None,
                 "quote": quote.quote,
             },
         )
@@ -724,7 +728,9 @@ class LedgerCrudSqlite(LedgerCrud):
                 ),
                 "paid_time": db.to_timestamp(
                     db.timestamp_from_seconds(quote.paid_time) or ""
-                ),
+                )
+                if quote.paid_time
+                else None,
                 "fee_paid": quote.fee_paid,
                 "proof": quote.payment_preimage,
                 "expiry": db.to_timestamp(
@@ -804,7 +810,9 @@ class LedgerCrudSqlite(LedgerCrud):
                 "fee_paid": quote.fee_paid,
                 "paid_time": db.to_timestamp(
                     db.timestamp_from_seconds(quote.paid_time) or ""
-                ),
+                )
+                if quote.paid_time
+                else None,
                 "proof": quote.payment_preimage,
                 "quote": quote.quote,
                 "checking_id": quote.checking_id,
@@ -821,8 +829,8 @@ class LedgerCrudSqlite(LedgerCrud):
         await (conn or db).execute(
             f"""
             INSERT INTO {db.table_with_schema('keysets')}
-            (id, seed, encrypted_seed, seed_encryption_method, derivation_path, valid_from, valid_to, first_seen, active, version, unit, input_fee_ppk, amounts, balance)
-            VALUES (:id, :seed, :encrypted_seed, :seed_encryption_method, :derivation_path, :valid_from, :valid_to, :first_seen, :active, :version, :unit, :input_fee_ppk, :amounts, :balance)
+            (id, seed, encrypted_seed, seed_encryption_method, derivation_path, valid_from, valid_to, first_seen, active, version, unit, input_fee_ppk, amounts, balance, final_expiry)
+            VALUES (:id, :seed, :encrypted_seed, :seed_encryption_method, :derivation_path, :valid_from, :valid_to, :first_seen, :active, :version, :unit, :input_fee_ppk, :amounts, :balance, :final_expiry)
             """,
             {
                 "id": keyset.id,
@@ -843,6 +851,7 @@ class LedgerCrudSqlite(LedgerCrud):
                 "input_fee_ppk": keyset.input_fee_ppk,
                 "amounts": json.dumps(keyset.amounts),
                 "balance": keyset.balance,
+                "final_expiry": keyset.final_expiry,  # NEW: Store final expiry
             },
         )
 
@@ -955,7 +964,7 @@ class LedgerCrudSqlite(LedgerCrud):
         await (conn or db).execute(
             f"""
             UPDATE {db.table_with_schema('keysets')}
-            SET seed = :seed, encrypted_seed = :encrypted_seed, seed_encryption_method = :seed_encryption_method, derivation_path = :derivation_path, valid_from = :valid_from, valid_to = :valid_to, first_seen = :first_seen, active = :active, version = :version, unit = :unit, input_fee_ppk = :input_fee_ppk
+            SET seed = :seed, encrypted_seed = :encrypted_seed, seed_encryption_method = :seed_encryption_method, derivation_path = :derivation_path, valid_from = :valid_from, valid_to = :valid_to, first_seen = :first_seen, active = :active, version = :version, unit = :unit, input_fee_ppk = :input_fee_ppk, final_expiry = :final_expiry
             WHERE id = :id
             """,
             {
@@ -976,6 +985,7 @@ class LedgerCrudSqlite(LedgerCrud):
                 "unit": keyset.unit.name,
                 "input_fee_ppk": keyset.input_fee_ppk,
                 "balance": keyset.balance,
+                "final_expiry": keyset.final_expiry,  # NEW: Update final expiry
             },
         )
 

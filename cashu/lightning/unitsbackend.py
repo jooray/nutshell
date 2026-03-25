@@ -46,7 +46,7 @@ class UnitsBackend(LightningBackend):
         if not settings.unitsd_api_secret:
             raise Unsupported("UNITSD_API_SECRET not configured")
 
-        self._unitsd_url = settings.unitsd_url.rstrip('/')
+        self._unitsd_url = settings.unitsd_url.rstrip("/")
         self._unitsd_headers = {
             "Authorization": f"Bearer {settings.unitsd_api_secret}",
             "Content-Type": "application/json",
@@ -97,14 +97,20 @@ class UnitsBackend(LightningBackend):
         return [u["code"].lower() for u in self._unitsd_units]
 
     # ────────────────────────── Unitsd API helpers ───────────────────────────────
-    async def _call_unitsd(self, endpoint: str, params: Optional[Dict] = None, json: Optional[Dict] = None) -> Dict:
+    async def _call_unitsd(
+        self, endpoint: str, params: Optional[Dict] = None, json: Optional[Dict] = None
+    ) -> Dict:
         """Make a request to unitsd API."""
         url = f"{self._unitsd_url}{endpoint}"
         try:
             if json is not None:
-                response = await self._client.post(url, headers=self._unitsd_headers, json=json)
+                response = await self._client.post(
+                    url, headers=self._unitsd_headers, json=json
+                )
             else:
-                response = await self._client.get(url, headers=self._unitsd_headers, params=params)
+                response = await self._client.get(
+                    url, headers=self._unitsd_headers, params=params
+                )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
@@ -130,11 +136,13 @@ class UnitsBackend(LightningBackend):
                 # Get quote from unitsd
                 quote_data = await self._call_unitsd(
                     "/api/v1/quote/mint",
-                    params={"amount": amount.amount, "unit": amount.unit.name}
+                    params={"amount": amount.amount, "unit": amount.unit.name},
                 )
 
                 msats = quote_data["msat_amount"]
-                logger.info(f"Unitsd quote: {amount.amount} {amount.unit.name} = {msats} msats")
+                logger.info(
+                    f"Unitsd quote: {amount.amount} {amount.unit.name} = {msats} msats"
+                )
 
                 return await self.backend.create_invoice(
                     Amount(Unit.msat, msats),
@@ -144,7 +152,9 @@ class UnitsBackend(LightningBackend):
                     **kwargs,
                 )
             except RuntimeError as e:
-                return InvoiceResponse(ok=False, error_message=f"Failed to create invoice: {str(e)}")
+                return InvoiceResponse(
+                    ok=False, error_message=f"Failed to create invoice: {str(e)}"
+                )
 
         return await self.backend.create_invoice(
             amount,
@@ -154,8 +164,14 @@ class UnitsBackend(LightningBackend):
             **kwargs,
         )
 
-    async def pay_invoice(self, quote: MeltQuote, fee_limit_msat: int, **kwargs) -> PaymentResponse:
-        unit = Unit(quote.unit) if isinstance(quote.unit, str) else (quote.unit or Unit.sat)
+    async def pay_invoice(
+        self, quote: MeltQuote, fee_limit_msat: int, **kwargs
+    ) -> PaymentResponse:
+        unit = (
+            Unit(quote.unit)
+            if isinstance(quote.unit, str)
+            else (quote.unit or Unit.sat)
+        )
 
         if unit in self._fiat_units:
             try:
@@ -163,16 +179,24 @@ class UnitsBackend(LightningBackend):
 
                 # Get current LN parameters from backend to execute the payment
                 current_ln_params_quote = await self.backend.get_payment_quote(
-                    PostMeltQuoteRequest(request=quote.request, unit="msat"))
+                    PostMeltQuoteRequest(request=quote.request, unit="msat")
+                )
 
-                if hasattr(current_ln_params_quote, 'error_message') and current_ln_params_quote.error_message:
-                    logger.error(f"Failed to get current LN parameters: {current_ln_params_quote.error_message}")
+                if (
+                    hasattr(current_ln_params_quote, "error_message")
+                    and current_ln_params_quote.error_message
+                ):
+                    logger.error(
+                        f"Failed to get current LN parameters: {current_ln_params_quote.error_message}"
+                    )
                     return PaymentResponse(
                         result=PaymentResult.FAILED,
-                        error_message=f"Failed to get current LN parameters: {current_ln_params_quote.error_message}"
+                        error_message=f"Failed to get current LN parameters: {current_ln_params_quote.error_message}",
                     )
 
-                current_ln_invoice_amount_msat = current_ln_params_quote.amount.to(Unit.msat).amount
+                current_ln_invoice_amount_msat = current_ln_params_quote.amount.to(
+                    Unit.msat
+                ).amount
                 current_ln_fee_msat = current_ln_params_quote.fee.to(Unit.msat).amount
 
                 # Create msat quote for backend execution
@@ -196,22 +220,29 @@ class UnitsBackend(LightningBackend):
                 )
 
                 # Execute payment via backend
-                resp = await self.backend.pay_invoice(msat_quote, fee_limit_msat, **kwargs)
+                resp = await self.backend.pay_invoice(
+                    msat_quote, fee_limit_msat, **kwargs
+                )
 
                 # If payment succeeded, send melt callback to unitsd
                 if resp.result == PaymentResult.SETTLED:
                     try:
-                        actual_fee_msat = resp.fee.to(Unit.msat).amount if resp.fee else 0
+                        actual_fee_msat = (
+                            resp.fee.to(Unit.msat).amount if resp.fee else 0
+                        )
                         await self._call_unitsd(
                             "/api/v1/callback/melt",
                             json={
                                 "currency_code": unit.name,
                                 "amount": quote.amount,
-                                "msat_amount": current_ln_invoice_amount_msat + actual_fee_msat,
+                                "msat_amount": current_ln_invoice_amount_msat
+                                + actual_fee_msat,
                                 "quote_id": quote.quote,
-                            }
+                            },
                         )
-                        logger.info(f"Sent melt callback to unitsd: {quote.amount} {unit.name}")
+                        logger.info(
+                            f"Sent melt callback to unitsd: {quote.amount} {unit.name}"
+                        )
                     except Exception as e:
                         logger.error(f"Failed to send melt callback to unitsd: {e}")
                         # Don't fail the payment if callback fails
@@ -222,8 +253,7 @@ class UnitsBackend(LightningBackend):
                     # Query unitsd for fee conversion
                     try:
                         fee_quote = await self._call_unitsd(
-                            "/api/v1/quote/melt",
-                            params={"bolt11": quote.request}
+                            "/api/v1/quote/melt", params={"bolt11": quote.request}
                         )
                         # For now, just set fee to 0 in fiat (it's included in the total amount)
                         resp.fee = Amount(unit, 0)
@@ -234,7 +264,7 @@ class UnitsBackend(LightningBackend):
                 logger.error(f"Could not process fiat payment: {e}")
                 return PaymentResponse(
                     result=PaymentResult.FAILED,
-                    error_message=f"Payment processing error: {str(e)}"
+                    error_message=f"Payment processing error: {str(e)}",
                 )
         else:
             resp = await self.backend.pay_invoice(quote, fee_limit_msat, **kwargs)
@@ -251,42 +281,40 @@ class UnitsBackend(LightningBackend):
         async for p in self.backend.paid_invoices_stream():
             yield p
 
-    async def get_payment_quote(self, melt_quote: PostMeltQuoteRequest) -> PaymentQuoteResponse:
+    async def get_payment_quote(
+        self, melt_quote: PostMeltQuoteRequest
+    ) -> PaymentQuoteResponse:
         ln_quote = await self.backend.get_payment_quote(
-            PostMeltQuoteRequest(
-                request=melt_quote.request,
-                unit="sat"
-            )
+            PostMeltQuoteRequest(request=melt_quote.request, unit="sat")
         )
 
-        unit = Unit(melt_quote.unit) if isinstance(melt_quote.unit, str) else (melt_quote.unit or Unit.sat)
+        unit = (
+            Unit(melt_quote.unit)
+            if isinstance(melt_quote.unit, str)
+            else (melt_quote.unit or Unit.sat)
+        )
 
         if unit not in self._fiat_units:
-                return ln_quote
+            return ln_quote
 
         try:
             # Get quote from unitsd for melt operation
             quote_data = await self._call_unitsd(
-                "/api/v1/quote/melt",
-                params={"bolt11": melt_quote.request}
+                "/api/v1/quote/melt", params={"bolt11": melt_quote.request}
             )
 
             fiat_amount = quote_data["amount"]
-            logger.info(f"Unitsd melt quote: {fiat_amount} {unit.name} for invoice {melt_quote.request[:20]}...")
+            logger.info(
+                f"Unitsd melt quote: {fiat_amount} {unit.name} for invoice {melt_quote.request[:20]}..."
+            )
 
             response = PaymentQuoteResponse(
                 checking_id=ln_quote.checking_id,
                 amount=Amount(unit, fiat_amount),
                 fee=Amount(unit, 0),  # Fee is already included in the amount
-                fee_reserve_msat=0  # No separate fee reserve for fiat payments
             )
 
             return response
         except RuntimeError as e:
             logger.error(f"Error in get_payment_quote: {e}")
-            return PaymentQuoteResponse(
-                checking_id=ln_quote.checking_id,
-                amount=Amount(unit, 0),
-                fee=Amount(unit, 0),
-                error_message=f"Failed to calculate quote: {str(e)}",
-            )
+            raise RuntimeError(f"Failed to calculate quote: {str(e)}")

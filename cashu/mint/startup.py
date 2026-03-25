@@ -40,6 +40,7 @@ for key, value in settings.dict().items():
         "mint_lnd_rest_invoice_macaroon",
         "mint_corelightning_rest_macaroon",
         "mint_clnrest_rune",
+        "unitsd_api_secret",
     ]:
         value = "********" if value is not None else None
 
@@ -130,7 +131,11 @@ async def start_mint():
     unitsd_derivation_paths = []
 
     # Initialize UnitsBackend if unitsd is configured
-    if settings.unitsd_url and settings.unitsd_api_secret and settings.mint_backend_bolt11_sat:
+    if (
+        settings.unitsd_url
+        and settings.unitsd_api_secret
+        and settings.mint_backend_bolt11_sat
+    ):
         try:
             logger.info(f"Querying unitsd at {settings.unitsd_url} for supported units")
 
@@ -145,13 +150,17 @@ async def start_mint():
                         unit = Unit(unit_code)
                         if unit not in backends.get(Method.bolt11, {}):
                             backends.setdefault(Method.bolt11, {})[unit] = units_backend
-                            logger.info(f"Initialized UnitsBackend for unit: {unit.name} (from unitsd)")
+                            logger.info(
+                                f"Initialized UnitsBackend for unit: {unit.name} (from unitsd)"
+                            )
                     except (KeyError, ValueError) as e:
                         logger.warning(f"Unknown unit from unitsd: {unit_code} - {e}")
 
                 # Store derivation paths for keyset activation
                 unitsd_derivation_paths = units_backend.get_derivation_paths()
-                logger.info(f"Successfully initialized UnitsBackend with {len(unitsd_units)} units from unitsd")
+                logger.info(
+                    f"Successfully initialized UnitsBackend with {len(unitsd_units)} units from unitsd"
+                )
             else:
                 logger.warning("Unitsd returned no enabled currencies")
 
