@@ -614,11 +614,11 @@ class Unit(Enum):
         elif self == Unit.msat:
             return f"{amount} msat"
         elif self == Unit.usd:
-            return f"${amount/100:.2f} USD"
+            return f"${amount / 100:.2f} USD"
         elif self == Unit.eur:
-            return f"{amount/100:.2f} EUR"
+            return f"{amount / 100:.2f} EUR"
         elif self == Unit.btc:
-            return f"{amount/1e8:.8f} BTC"
+            return f"{amount / 1e8:.8f} BTC"
         elif self == Unit.auth:
             return f"{amount} AUTH"
         else:
@@ -628,8 +628,8 @@ class Unit(Enum):
 
             decimals = settings.mint_unit_decimals.get(unit_name, 0)
             if decimals > 0:
-                divisor = 10 ** decimals
-                return f"{amount/divisor:.{decimals}f} {unit_name.upper()}"
+                divisor = 10**decimals
+                return f"{amount / divisor:.{decimals}f} {unit_name.upper()}"
             return f"{amount} {unit_name.upper()}"
 
     def __str__(self):
@@ -687,18 +687,18 @@ class Amount:
     def sat_to_btc(self) -> str:
         if self.unit != Unit.sat:
             raise Exception("Amount must be in satoshis")
-        return f"{self.amount/1e8:.8f}"
+        return f"{self.amount / 1e8:.8f}"
 
     def msat_to_btc(self) -> str:
         if self.unit != Unit.msat:
             raise Exception("Amount must be in msat")
         sat_amount = Amount(Unit.msat, self.amount).to(Unit.sat, round="up")
-        return f"{sat_amount.amount/1e8:.8f}"
+        return f"{sat_amount.amount / 1e8:.8f}"
 
     def cents_to_usd(self) -> str:
         if self.unit != Unit.usd and self.unit != Unit.eur:
             raise Exception("Amount must be in cents")
-        return f"{self.amount/100:.2f}"
+        return f"{self.amount / 100:.2f}"
 
     def str(self) -> str:
         return self.unit.str(self.amount)
@@ -765,6 +765,37 @@ class Amount:
 
 class Method(Enum):
     bolt11 = 0
+
+    @classmethod
+    def _missing_(cls, value):
+        """Allow dynamic method registration from plugins/configuration.
+
+        This mirrors the Unit._missing_ pattern, enabling payment method
+        extensions (e.g., onchain zcash) without modifying the enum definition.
+        """
+        if isinstance(value, str):
+            value_lower = value.lower()
+            # Check if already exists by name
+            for member in cls:
+                if member.name == value_lower:
+                    return member
+
+            # Create new member with auto-incrementing ID
+            existing_values = {member.value for member in cls}
+            next_id = 1
+            while next_id in existing_values:
+                next_id += 1
+
+            new_member = object.__new__(cls)
+            new_member._name_ = value_lower
+            new_member._value_ = next_id
+
+            cls._value2member_map_[next_id] = new_member
+            cls._member_map_[value_lower] = new_member
+            cls._member_names_.append(value_lower)
+
+            return new_member
+        return None
 
 
 class WalletKeyset:
@@ -942,9 +973,11 @@ class MintKeyset:
                 " from derivation path"
             )
             try:
-                self.unit = Unit(
-                    int(self.derivation_path.split("/")[2].replace("'", ""))
-                )
+                # derivation path format: m/purpose'/coin_type'/unit_index'
+                # unit_index is the last segment
+                path_parts = self.derivation_path.split("/")
+                unit_index = int(path_parts[-1].replace("'", ""))
+                self.unit = Unit(unit_index)
                 logger.trace(f"Inferred unit: {self.unit.name}")
             except Exception:
                 logger.trace(
@@ -988,8 +1021,7 @@ class MintKeyset:
     def public_keys_hex(self) -> Dict[int, str]:
         assert self.public_keys, "public keys not set"
         return {
-            int(amount): key.format().hex()
-            for amount, key in self.public_keys.items()
+            int(amount): key.format().hex() for amount, key in self.public_keys.items()
         }
 
     def generate_keys(self):
@@ -1030,7 +1062,7 @@ class MintKeyset:
                 self.seed, self.derivation_path, self.amounts
             )
             self.public_keys = derive_pubkeys(self.private_keys, self.amounts)  # type: ignore
-            
+
             if id_in_db:
                 # If loading from DB, preserve existing ID
                 self.id = id_in_db
@@ -1043,14 +1075,19 @@ class MintKeyset:
                 self.seed, self.derivation_path, self.amounts
             )
             self.public_keys = derive_pubkeys(self.private_keys, self.amounts)  # type: ignore
-            
+
             # KEYSETS V2: Use new keyset ID derivation
             if id_in_db:
                 # If loading from DB, preserve existing ID
                 self.id = id_in_db
             else:
                 assert self.public_keys is not None
-                self.id = derive_keyset_id_v2(self.public_keys, self.unit.name, self.final_expiry, self.input_fee_ppk)
+                self.id = derive_keyset_id_v2(
+                    self.public_keys,
+                    self.unit.name,
+                    self.final_expiry,
+                    self.input_fee_ppk,
+                )
                 logger.info(f"Generated keyset v2 ID: {self.id}")
 
 
@@ -1481,9 +1518,9 @@ class AuthProof(BaseModel):
     def to_base64(self):
         serialize_dict = self.model_dump()
         serialize_dict.pop("amount", None)
-        return (
-            self.prefix + base64.urlsafe_b64encode(json.dumps(serialize_dict).encode()).decode().rstrip("=")
-        )
+        return self.prefix + base64.urlsafe_b64encode(
+            json.dumps(serialize_dict).encode()
+        ).decode().rstrip("=")
 
     @classmethod
     def from_base64(cls, base64_str: str):

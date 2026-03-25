@@ -139,18 +139,42 @@ class UnitsBackend(LightningBackend):
                     params={"amount": amount.amount, "unit": amount.unit.name},
                 )
 
-                msats = quote_data["msat_amount"]
+                msats = quote_data["amount_msat"]
+                btc_price = quote_data.get("btc_price", 0.0)
                 logger.info(
                     f"Unitsd quote: {amount.amount} {amount.unit.name} = {msats} msats"
+                    f" (BTC price: {btc_price})"
                 )
 
-                return await self.backend.create_invoice(
+                resp = await self.backend.create_invoice(
                     Amount(Unit.msat, msats),
                     memo=memo,
                     description_hash=description_hash,
                     unhashed_description=unhashed_description,
                     **kwargs,
                 )
+
+                # Send mint callback to unitsd if invoice was created successfully
+                if resp.ok:
+                    try:
+                        await self._call_unitsd(
+                            "/api/v1/callback/mint",
+                            json={
+                                "quote_id": resp.checking_id or "",
+                                "unit": amount.unit.name,
+                                "amount": amount.amount,
+                                "msat_amount": msats,
+                                "btc_price": btc_price,
+                            },
+                        )
+                        logger.info(
+                            f"Sent mint callback to unitsd: {amount.amount} {amount.unit.name}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send mint callback to unitsd: {e}")
+                        # Don't fail the invoice if callback fails
+
+                return resp
             except RuntimeError as e:
                 return InvoiceResponse(
                     ok=False, error_message=f"Failed to create invoice: {str(e)}"
@@ -230,14 +254,31 @@ class UnitsBackend(LightningBackend):
                         actual_fee_msat = (
                             resp.fee.to(Unit.msat).amount if resp.fee else 0
                         )
+                        total_msat = current_ln_invoice_amount_msat + actual_fee_msat
+
+                        # Get BTC price for the callback - use the melt quote endpoint
+                        btc_price = 0.0
+                        try:
+                            price_data = await self._call_unitsd(
+                                "/api/v1/quote/melt",
+                                params={
+                                    "unit": unit.name,
+                                    "invoice_msat": current_ln_invoice_amount_msat,
+                                    "ln_fee_msat": actual_fee_msat,
+                                },
+                            )
+                            btc_price = price_data.get("btc_price", 0.0)
+                        except Exception:
+                            pass
+
                         await self._call_unitsd(
                             "/api/v1/callback/melt",
                             json={
-                                "currency_code": unit.name,
-                                "amount": quote.amount,
-                                "msat_amount": current_ln_invoice_amount_msat
-                                + actual_fee_msat,
                                 "quote_id": quote.quote,
+                                "unit": unit.name,
+                                "amount": quote.amount,
+                                "msat_amount": total_msat,
+                                "btc_price": btc_price,
                             },
                         )
                         logger.info(
@@ -247,18 +288,9 @@ class UnitsBackend(LightningBackend):
                         logger.error(f"Failed to send melt callback to unitsd: {e}")
                         # Don't fail the payment if callback fails
 
-                # Convert fee back to fiat unit
+                # Set fee to 0 in fiat (Lightning fees are absorbed into the conversion)
                 if resp.fee:
-                    paid_ln_fee_msat = resp.fee.to(Unit.msat).amount
-                    # Query unitsd for fee conversion
-                    try:
-                        fee_quote = await self._call_unitsd(
-                            "/api/v1/quote/melt", params={"bolt11": quote.request}
-                        )
-                        # For now, just set fee to 0 in fiat (it's included in the total amount)
-                        resp.fee = Amount(unit, 0)
-                    except:
-                        resp.fee = Amount(unit, 0)
+                    resp.fee = Amount(unit, 0)
 
             except Exception as e:
                 logger.error(f"Could not process fiat payment: {e}")
@@ -298,14 +330,24 @@ class UnitsBackend(LightningBackend):
             return ln_quote
 
         try:
+            # Get the invoice amount in msat from the LN quote
+            invoice_msat = ln_quote.amount.to(Unit.msat).amount
+            ln_fee_msat = ln_quote.fee.to(Unit.msat).amount
+
             # Get quote from unitsd for melt operation
             quote_data = await self._call_unitsd(
-                "/api/v1/quote/melt", params={"bolt11": melt_quote.request}
+                "/api/v1/quote/melt",
+                params={
+                    "unit": unit.name,
+                    "invoice_msat": invoice_msat,
+                    "ln_fee_msat": ln_fee_msat,
+                },
             )
 
-            fiat_amount = quote_data["amount"]
+            fiat_amount = quote_data["amount_fiat"]
             logger.info(
-                f"Unitsd melt quote: {fiat_amount} {unit.name} for invoice {melt_quote.request[:20]}..."
+                f"Unitsd melt quote: {fiat_amount} {unit.name} for invoice"
+                f" {melt_quote.request[:20]}... ({invoice_msat} msat)"
             )
 
             response = PaymentQuoteResponse(

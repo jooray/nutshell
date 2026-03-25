@@ -333,11 +333,16 @@ class Ledger(
 
     # ------- TRANSACTIONS -------
 
-    async def mint_quote(self, quote_request: PostMintQuoteRequest) -> MintQuote:
+    async def mint_quote(
+        self,
+        quote_request: PostMintQuoteRequest,
+        method_str: str = "bolt11",
+    ) -> MintQuote:
         """Creates a mint quote and stores it in the database.
 
         Args:
             quote_request (PostMintQuoteRequest): Mint quote request.
+            method_str (str): Payment method name (e.g., "bolt11", "zcash").
 
         Raises:
             Exception: Quote creation failed.
@@ -349,18 +354,17 @@ class Ledger(
         if not quote_request.amount > 0:
             raise TransactionError("amount must be positive")
         if (
-            settings.mint_max_mint_bolt11_sat
+            method_str == Method.bolt11.name
+            and settings.mint_max_mint_bolt11_sat
             and quote_request.amount > settings.mint_max_mint_bolt11_sat
         ):
             raise TransactionAmountExceedsLimitError(
                 f"Maximum mint amount is {settings.mint_max_mint_bolt11_sat} sat."
             )
-        if settings.mint_bolt11_disable_mint:
+        if method_str == Method.bolt11.name and settings.mint_bolt11_disable_mint:
             raise NotAllowedError("Minting with bolt11 is disabled.")
 
-        unit, method = self._verify_and_get_unit_method(
-            quote_request.unit, Method.bolt11.name
-        )
+        unit, method = self._verify_and_get_unit_method(quote_request.unit, method_str)
 
         if (
             quote_request.description
@@ -388,18 +392,20 @@ class Ledger(
         )
 
         if not (invoice_response.payment_request and invoice_response.checking_id):
-            raise LightningError("could not fetch bolt11 payment request from backend")
+            raise LightningError("could not fetch payment request from backend")
 
-        # get invoice expiry time
-        invoice_obj = bolt11.decode(invoice_response.payment_request)
-
-        # NOTE: we normalize the request to lowercase to avoid case sensitivity
-        # This works with Lightning but might not work with other methods
-        request = invoice_response.payment_request.lower()
-
+        # get expiry time: for bolt11, decode invoice; for other methods, use backend-provided expiry
         expiry = None
-        if invoice_obj.expiry is not None:
-            expiry = invoice_obj.date + invoice_obj.expiry
+        if method == Method.bolt11:
+            invoice_obj = bolt11.decode(invoice_response.payment_request)
+            # NOTE: we normalize the request to lowercase to avoid case sensitivity
+            # This works with Lightning but might not work with other methods
+            request = invoice_response.payment_request.lower()
+            if invoice_obj.expiry is not None:
+                expiry = invoice_obj.date + invoice_obj.expiry
+        else:
+            # Non-bolt11 methods: payment_request is used as-is (e.g., Zcash address)
+            request = invoice_response.payment_request
 
         quote = MintQuote(
             quote=random_hash(),
@@ -528,11 +534,12 @@ class Ledger(
         return promises
 
     def create_internal_melt_quote(
-        self, mint_quote: MintQuote, melt_quote: PostMeltQuoteRequest
+        self,
+        mint_quote: MintQuote,
+        melt_quote: PostMeltQuoteRequest,
+        method_str: str = "bolt11",
     ) -> PaymentQuoteResponse:
-        unit, method = self._verify_and_get_unit_method(
-            melt_quote.unit, Method.bolt11.name
-        )
+        unit, method = self._verify_and_get_unit_method(melt_quote.unit, method_str)
         # NOTE: we normalize the request to lowercase to avoid case sensitivity
         # This works with Lightning but might not work with other methods
         request = melt_quote.request.lower()
@@ -571,12 +578,13 @@ class Ledger(
         return payment_quote
 
     def validate_payment_quote(
-        self, melt_quote: PostMeltQuoteRequest, payment_quote: PaymentQuoteResponse
+        self,
+        melt_quote: PostMeltQuoteRequest,
+        payment_quote: PaymentQuoteResponse,
+        method_str: str = "bolt11",
     ):
         # payment quote validation
-        unit, method = self._verify_and_get_unit_method(
-            melt_quote.unit, Method.bolt11.name
-        )
+        unit, method = self._verify_and_get_unit_method(melt_quote.unit, method_str)
         if not payment_quote.checking_id:
             raise Exception("quote has no checking id")
         # verify that payment quote amount is as expected
@@ -596,12 +604,15 @@ class Ledger(
             raise TransactionError("payment quote fee units do not match")
 
     async def melt_quote(
-        self, melt_quote: PostMeltQuoteRequest
+        self,
+        melt_quote: PostMeltQuoteRequest,
+        method_str: str = "bolt11",
     ) -> PostMeltQuoteResponse:
         """Creates a melt quote and stores it in the database.
 
         Args:
             melt_quote (PostMeltQuoteRequest): Melt quote request.
+            method_str (str): Payment method name (e.g., "bolt11", "zcash").
 
         Raises:
             Exception: Quote invalid.
@@ -611,16 +622,17 @@ class Ledger(
         Returns:
             PostMeltQuoteResponse: Melt quote response.
         """
-        if settings.mint_bolt11_disable_melt:
-            raise NotAllowedError("Melting with bol11 is disabled.")
+        if method_str == Method.bolt11.name and settings.mint_bolt11_disable_melt:
+            raise NotAllowedError("Melting with bolt11 is disabled.")
 
-        unit, method = self._verify_and_get_unit_method(
-            melt_quote.unit, Method.bolt11.name
-        )
+        unit, method = self._verify_and_get_unit_method(melt_quote.unit, method_str)
 
         # NOTE: we normalize the request to lowercase to avoid case sensitivity
         # This works with Lightning but might not work with other methods
-        request = melt_quote.request.lower()
+        if method == Method.bolt11:
+            request = melt_quote.request.lower()
+        else:
+            request = melt_quote.request
 
         # check if there is a mint quote with the same payment request
         # so that we would be able to handle the transaction internally
@@ -631,7 +643,9 @@ class Ledger(
             # it's just not possible to handle this case
             if melt_quote.is_mpp:
                 raise TransactionError("internal mpp not allowed.")
-            payment_quote = self.create_internal_melt_quote(mint_quote, melt_quote)
+            payment_quote = self.create_internal_melt_quote(
+                mint_quote, melt_quote, method_str=method_str
+            )
         else:
             # not internal
             # verify that the backend supports mpp if the quote request has an amount
@@ -642,26 +656,28 @@ class Ledger(
                 melt_quote=melt_quote
             )
 
-        self.validate_payment_quote(melt_quote, payment_quote)
+        self.validate_payment_quote(melt_quote, payment_quote, method_str=method_str)
 
         # verify that the amount of the proofs is not larger than the maximum allowed
         if (
-            settings.mint_max_melt_bolt11_sat
+            method == Method.bolt11
+            and settings.mint_max_melt_bolt11_sat
             and payment_quote.amount.to(unit).amount > settings.mint_max_melt_bolt11_sat
         ):
             raise NotAllowedError(
                 f"Maximum melt amount is {settings.mint_max_melt_bolt11_sat} sat."
             )
 
-        # We assume that the request is a bolt11 invoice, this works since we
-        # support only the bol11 method for now.
-        invoice_obj = bolt11.decode(melt_quote.request)
-        if not invoice_obj.amount_msat:
-            raise TransactionError("invoice has no amount.")
-        # we set the expiry of this quote to the expiry of the bolt11 invoice
+        # get expiry: for bolt11, decode invoice; for other methods, use configured expiry
         expiry = None
-        if invoice_obj.expiry is not None:
-            expiry = invoice_obj.date + invoice_obj.expiry
+        if method == Method.bolt11:
+            invoice_obj = bolt11.decode(melt_quote.request)
+            if not invoice_obj.amount_msat:
+                raise TransactionError("invoice has no amount.")
+            # we set the expiry of this quote to the expiry of the bolt11 invoice
+            if invoice_obj.expiry is not None:
+                expiry = invoice_obj.date + invoice_obj.expiry
+        # else: non-bolt11 methods set expiry via the backend or configuration
 
         quote = MeltQuote(
             quote=random_hash(),

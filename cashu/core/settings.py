@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from environs import Env  # type: ignore
 from pydantic import Field, field_validator
@@ -75,7 +75,11 @@ class MintSettings(CashuSettings):
     mint_retry_exponential_backoff_max_delay: int = Field(default=10)
 
     # Custom units configuration
-    mint_units: List[str] = Field(default=["sat"])
+    # NOTE: Union[str, List[str]] is needed because pydantic-settings v2 tries
+    # to JSON-parse List fields from env vars before validators run.
+    # The Union type enables allow_parse_failure, so the comma-separated string
+    # falls through to the field_validator which splits it into a list.
+    mint_units: Union[str, List[str]] = Field(default=["sat"])
     mint_unit_decimals: Dict[str, int] = Field(default_factory=dict)
 
     # Unitsd configuration
