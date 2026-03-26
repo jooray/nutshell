@@ -76,6 +76,10 @@ class UnitsBackend(LightningBackend):
             try:
                 unit = Unit(unit_info["code"].lower())
                 self._fiat_units.add(unit)
+
+                decimals = unit_info.get("decimals")
+                if isinstance(decimals, int):
+                    settings.mint_unit_decimals[unit.name] = decimals
             except (KeyError, ValueError):
                 logger.warning(f"Unknown unit from unitsd: {unit_info.get('code')}")
 
