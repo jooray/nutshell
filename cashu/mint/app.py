@@ -126,3 +126,8 @@ else:
 
 if settings.mint_require_auth:
     app.include_router(auth_router, tags=["Auth"])
+
+if settings.mint_zcash_enabled:
+    from .router_zcash import router as zcash_router
+
+    app.include_router(zcash_router, tags=["Zcash"])

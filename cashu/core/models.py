@@ -107,7 +107,7 @@ class KeysResponseKeyset(BaseModel):
     active: bool
     input_fee_ppk: Optional[int] = None
     keys: Dict[int, str]
-    final_expiry: Optional[int] = None 
+    final_expiry: Optional[int] = None
 
 
 class KeysResponse(BaseModel):
@@ -218,6 +218,9 @@ class PostMeltQuoteRequest(BaseModel):
     request: str = Field(
         ..., max_length=settings.mint_max_request_length
     )  # output payment request
+    amount: Optional[int] = Field(
+        default=None, gt=0
+    )  # explicit amount (required for non-bolt11 methods where request doesn't encode amount)
     options: Optional[PostMeltRequestOptions] = None
 
     @property

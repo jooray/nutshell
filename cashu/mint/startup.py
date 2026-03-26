@@ -41,6 +41,7 @@ for key, value in settings.dict().items():
         "mint_corelightning_rest_macaroon",
         "mint_clnrest_rune",
         "unitsd_api_secret",
+        "mint_zcash_zwalletd_secret",
     ]:
         value = "********" if value is not None else None
 
@@ -168,6 +169,26 @@ async def start_mint():
             logger.error(f"Failed to connect to unitsd at {settings.unitsd_url}: {e}")
             raise Exception(f"Cannot start mint without unitsd connection: {e}")
 
+    # Initialize ZcashBackend if enabled
+    if settings.mint_zcash_enabled:
+        from ..lightning.zcash_backend import ZcashBackend
+
+        logger.info("Initializing ZcashBackend for onchain ZEC support")
+
+        # Ensure the "zec" unit exists (may already be registered via unitsd)
+        zec_unit = Unit("zec")  # triggers _missing_ if not already a member
+
+        # Register "zcash" as a dynamic Method
+        zcash_method = Method("zcash")
+
+        # Create and register ZcashBackend
+        zcash_backend = ZcashBackend(unit=zec_unit)
+        backends.setdefault(zcash_method, {})[zec_unit] = zcash_backend
+
+        logger.info(
+            f"Registered ZcashBackend: backends[{zcash_method.name}][{zec_unit.name}]"
+        )
+
     await migrate_databases(ledger.db, mint_migrations)
     logger.info("Starting mint ledger.")
     await ledger.startup_ledger()
@@ -176,6 +197,12 @@ async def start_mint():
     for derivation_path in unitsd_derivation_paths:
         logger.info(f"Activating keyset for derivation path: {derivation_path}")
         await ledger.activate_keyset(derivation_path=derivation_path)
+
+    # Activate keyset for ZEC if zcash is enabled (ensures keyset exists for the unit)
+    if settings.mint_zcash_enabled:
+        zec_derivation_path = f"{settings.mint_derivation_path}/zec"
+        logger.info(f"Activating ZEC keyset for derivation path: {zec_derivation_path}")
+        await ledger.activate_keyset(derivation_path=zec_derivation_path)
 
     logger.info("Mint started.")
     # asyncio.create_task(rotate_keys())

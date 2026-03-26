@@ -356,12 +356,27 @@ class MintRedisCache(MintSettings):
     mint_redis_cache_ttl: Optional[int] = Field(default=60 * 60 * 24 * 7)  # 1 week
 
 
+class ZcashSettings(MintSettings):
+    mint_zcash_enabled: bool = Field(default=False)
+    mint_zcash_zwalletd_url: str = Field(default="http://127.0.0.1:3340")
+    mint_zcash_zwalletd_secret: Optional[str] = Field(default=None)
+    mint_zcash_min_confirmations: int = Field(default=1, ge=1)
+    mint_zcash_quote_expiry: int = Field(
+        default=86400,
+        title="Zcash quote expiry",
+        description="Expiry time for Zcash onchain quotes in seconds (default 24h).",
+    )
+    mint_zcash_mint_fee_percent: float = Field(default=0.0, ge=0.0)
+    mint_zcash_melt_fee_percent: float = Field(default=0.0, ge=0.0)
+
+
 class Settings(
     EnvSettings,
     LndRPCFundingSource,
     LndRestFundingSource,
     CoreLightningRestFundingSource,
     CLNRestFundingSource,
+    ZcashSettings,
     FakeWalletSettings,
     MintLimits,
     MintBackends,
