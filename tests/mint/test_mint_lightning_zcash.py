@@ -187,6 +187,35 @@ async def test_zcash_pay_invoice_success():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_zcash_pay_invoice_uses_longer_send_timeout():
+    """pay_invoice() should allow longer zwalletd send/broadcast time."""
+    captured = {}
+
+    def responder(request):
+        captured["timeout"] = request.extensions.get("timeout")
+        return Response(
+            200,
+            json={"txid": "abc123def456", "status": "pending", "fee": 10000},
+        )
+
+    respx.post(f"{ZWALLETD_URL}/api/v1/send").mock(side_effect=responder)
+    quote = MeltQuote(
+        request=SAMPLE_ADDRESS,
+        quote="test-quote-id",
+        method="zcash",
+        checking_id="pending",
+        unit="zec",
+        amount=500000,
+        fee_reserve=10000,
+        state=MeltQuoteState.unpaid,
+    )
+    payment = await backend.pay_invoice(quote, fee_limit_msat=0)
+    assert payment.result == PaymentResult.PENDING
+    assert captured["timeout"]["read"] == 300.0
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_zcash_pay_invoice_failure():
     """pay_invoice() should handle send failures."""
     respx.post(f"{ZWALLETD_URL}/api/v1/send").mock(
@@ -205,6 +234,39 @@ async def test_zcash_pay_invoice_failure():
     payment = await backend.pay_invoice(quote, fee_limit_msat=0)
     assert payment.result == PaymentResult.FAILED
     assert payment.error_message is not None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_zcash_pay_invoice_returns_pending_with_txid_on_http_error_after_send():
+    """pay_invoice() should preserve txid if zwalletd reports a partial send result."""
+    respx.post(f"{ZWALLETD_URL}/api/v1/send").mock(
+        return_value=Response(
+            502,
+            json={
+                "error": "gRPC error: Timed out broadcasting transaction",
+                "txid": "abc123def456",
+                "status": "pending",
+                "fee": 10000,
+            },
+        )
+    )
+    quote = MeltQuote(
+        request=SAMPLE_ADDRESS,
+        quote="test-quote-id",
+        method="zcash",
+        checking_id="pending",
+        unit="zec",
+        amount=500000,
+        fee_reserve=10000,
+        state=MeltQuoteState.unpaid,
+    )
+    payment = await backend.pay_invoice(quote, fee_limit_msat=0)
+    assert payment.result == PaymentResult.PENDING
+    assert payment.checking_id == "abc123def456"
+    assert payment.fee == Amount(zec_unit, 10000)
+    assert payment.preimage == "abc123def456"
+    assert "Timed out broadcasting transaction" in (payment.error_message or "")
 
 
 # ------------------------------------------------------------------

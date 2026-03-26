@@ -68,12 +68,17 @@ class ZcashBackend(LightningBackend):
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, json_data: Optional[dict] = None) -> dict:
+    async def _post(
+        self,
+        path: str,
+        json_data: Optional[dict] = None,
+        timeout: float = 30.0,
+    ) -> dict:
         """POST request to zwalletd."""
         url = f"{self._zwalletd_url}{path}"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                url, headers=self._headers, json=json_data, timeout=30.0
+                url, headers=self._headers, json=json_data, timeout=timeout
             )
             resp.raise_for_status()
             return resp.json()
@@ -152,6 +157,7 @@ class ZcashBackend(LightningBackend):
                     "amount": quote.amount,
                     "memo": f"cashu melt {quote.quote}",
                 },
+                timeout=300.0,
             )
             txid = data["txid"]
             fee_zat = data.get("fee", 0)
@@ -167,6 +173,33 @@ class ZcashBackend(LightningBackend):
                 checking_id=txid,
                 fee=Amount(self.unit, fee_zat),
                 preimage=txid,  # txid serves as proof of payment
+            )
+        except httpx.HTTPStatusError as e:
+            response_data = {}
+            try:
+                response_data = e.response.json()
+            except Exception:
+                pass
+
+            txid = response_data.get("txid")
+            if txid:
+                fee_zat = response_data.get("fee", 0)
+                error_message = response_data.get("error") or str(e)
+                logger.warning(
+                    "ZcashBackend: send returned error after tx creation, "
+                    f"using txid={txid} for status tracking: {error_message}"
+                )
+                return PaymentResponse(
+                    result=PaymentResult.PENDING,
+                    checking_id=txid,
+                    fee=Amount(self.unit, fee_zat),
+                    preimage=txid,
+                    error_message=error_message,
+                )
+            logger.error(f"ZcashBackend pay_invoice error: {e}")
+            return PaymentResponse(
+                result=PaymentResult.FAILED,
+                error_message=str(e),
             )
         except Exception as e:
             logger.error(f"ZcashBackend pay_invoice error: {e}")

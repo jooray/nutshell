@@ -200,7 +200,9 @@ async def start_mint():
 
     # Activate keyset for ZEC if zcash is enabled (ensures keyset exists for the unit)
     if settings.mint_zcash_enabled:
-        zec_derivation_path = f"{settings.mint_derivation_path}/zec"
+        zec_derivation_parts = settings.mint_derivation_path.split("/")
+        zec_derivation_parts[-1] = f"{zec_unit.value}'"
+        zec_derivation_path = "/".join(zec_derivation_parts)
         logger.info(f"Activating ZEC keyset for derivation path: {zec_derivation_path}")
         await ledger.activate_keyset(derivation_path=zec_derivation_path)
 

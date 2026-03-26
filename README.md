@@ -214,6 +214,67 @@ poetry run mint
 
 For testing, you can use Nutshell without a Lightning backend by setting `MINT_BACKEND_BOLT11_SAT=FakeWallet` in the `.env` file.
 
+### Zcash onchain testnet
+
+This branch also supports Zcash onchain minting and melting through `zwalletd`.
+
+Minimal mint settings:
+
+```bash
+MINT_LISTEN_HOST=127.0.0.1
+MINT_LISTEN_PORT=3438
+MINT_BACKEND_BOLT11_SAT=FakeWallet
+MINT_PRIVATE_KEY=<random hex>
+MINT_UNITS=sat,zec
+MINT_UNIT_DECIMALS_ZEC=8
+MINT_ZCASH_ENABLED=TRUE
+MINT_ZCASH_ZWALLETD_URL=http://127.0.0.1:3340
+MINT_ZCASH_ZWALLETD_SECRET=<same secret as zwalletd>
+MINT_ZCASH_MIN_CONFIRMATIONS=1
+```
+
+Notes:
+
+- `3438` is used here so the Zcash test mint does not conflict with another mint already bound to `3338`.
+- `MINT_UNITS` must include `zec`, or the dynamic `Unit("zec")` registration will not happen.
+- The mint still expects a base `bolt11` backend at startup; `FakeWallet` is sufficient for local Zcash testing.
+
+Example `zwalletd` testnet settings:
+
+```bash
+ZWALLETD_NETWORK=testnet
+ZWALLETD_LIGHTWALLETD_URL=https://lwd.testnet.zec.pro:9067
+ZWALLETD_SEED_PHRASE="<24 word seed>"
+ZWALLETD_BIRTHDAY_HEIGHT=3917900
+ZWALLETD_DB_PATH=./data/testnet-zwalletd.sqlite
+ZWALLETD_HOST=127.0.0.1
+ZWALLETD_PORT=3340
+ZWALLETD_API_SECRET=<same secret as mint>
+```
+
+Bring the stack up in two terminals:
+
+```bash
+# terminal 1
+cd zwalletd
+cargo build --release
+./target/release/zwalletd
+
+# terminal 2
+cd nutshell
+poetry install
+poetry run mint
+```
+
+Public testnet resources that were reachable during development:
+
+- `https://lwd.testnet.zec.pro:9067` - public testnet `lightwalletd`
+- `https://explorer.testnet.zec.pro` - testnet explorer
+- `https://testnet.zecfaucet.com/` - testnet faucet candidate
+- `https://faucet.zecpages.com/` - faucet linked from Zcash docs
+
+Faucets are not stable infrastructure, so end-to-end deposit tests may still require a manual browser step.
+
 ### NUT-19 Caching with Redis
 
 To cache HTTP responses ([NUT-19](https://github.com/cashubtc/nuts/blob/main/19.md)), you can either install Redis manually or use the docker compose file in `docker/redis/docker-compose.yaml` to start Redis in a container.
