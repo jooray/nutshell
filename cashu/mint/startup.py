@@ -178,15 +178,17 @@ async def start_mint():
         # Ensure the "zec" unit exists (may already be registered via unitsd)
         zec_unit = Unit("zec")  # triggers _missing_ if not already a member
 
-        # Register "zcash" as a dynamic Method
-        zcash_method = Method("zcash")
+        # Register "onchain" as the spec-conformant method name
+        # (NUT-XX, cashubtc/nuts#365). The (onchain, zec) pair signals
+        # native Zcash chain to wallets; (onchain, sat) would be native BTC.
+        onchain_method = Method("onchain")
 
         # Create and register ZcashBackend
         zcash_backend = ZcashBackend(unit=zec_unit)
-        backends.setdefault(zcash_method, {})[zec_unit] = zcash_backend
+        backends.setdefault(onchain_method, {})[zec_unit] = zcash_backend
 
         logger.info(
-            f"Registered ZcashBackend: backends[{zcash_method.name}][{zec_unit.name}]"
+            f"Registered ZcashBackend: backends[{onchain_method.name}][{zec_unit.name}]"
         )
 
     await migrate_databases(ledger.db, mint_migrations)

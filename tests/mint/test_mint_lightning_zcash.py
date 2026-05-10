@@ -170,7 +170,7 @@ async def test_zcash_pay_invoice_success():
     quote = MeltQuote(
         request=SAMPLE_ADDRESS,
         quote="test-quote-id",
-        method="zcash",
+        method="onchain",
         checking_id="pending",
         unit="zec",
         amount=500000,
@@ -202,7 +202,7 @@ async def test_zcash_pay_invoice_uses_longer_send_timeout():
     quote = MeltQuote(
         request=SAMPLE_ADDRESS,
         quote="test-quote-id",
-        method="zcash",
+        method="onchain",
         checking_id="pending",
         unit="zec",
         amount=500000,
@@ -224,7 +224,7 @@ async def test_zcash_pay_invoice_failure():
     quote = MeltQuote(
         request=SAMPLE_ADDRESS,
         quote="test-quote-id",
-        method="zcash",
+        method="onchain",
         checking_id="pending",
         unit="zec",
         amount=500000,
@@ -254,7 +254,7 @@ async def test_zcash_pay_invoice_returns_pending_with_txid_on_http_error_after_s
     quote = MeltQuote(
         request=SAMPLE_ADDRESS,
         quote="test-quote-id",
-        method="zcash",
+        method="onchain",
         checking_id="pending",
         unit="zec",
         amount=500000,
@@ -542,7 +542,7 @@ async def test_zcash_melt_flow():
     quote = MeltQuote(
         request=SAMPLE_ADDRESS,
         quote="melt-quote-id",
-        method="zcash",
+        method="onchain",
         checking_id="pending",
         unit="zec",
         amount=300000,

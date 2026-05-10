@@ -235,6 +235,23 @@ class ZcashBackend(LightningBackend):
                 error_message=str(e),
             )
 
+    async def get_deposit_total(self, checking_id: str) -> int:
+        """Total confirmed zatoshi deposited at this address (NUT-XX `amount_paid`).
+
+        Used by the onchain router to surface partial-deposit accounting in
+        the mint quote response. Returns 0 if the backend is unreachable so
+        callers can keep serving the cached quote without 5xx-ing.
+        """
+        try:
+            data = await self._get(
+                f"/api/v1/deposit/{checking_id}",
+                params={"min_confirmations": self._min_confirmations},
+            )
+            return int(data.get("total_confirmed", 0))
+        except Exception as e:
+            logger.error(f"ZcashBackend get_deposit_total error: {e}")
+            return 0
+
     async def get_payment_status(self, checking_id: str) -> PaymentStatus:
         """Check send status for a melt quote.
 

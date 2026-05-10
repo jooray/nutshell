@@ -90,7 +90,7 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                     mint_setting.options = MintMethodBolt11OptionSetting(
                         description=unit_dict[unit].supports_description
                     ).model_dump(exclude_none=True)
-                elif method.name == "zcash":
+                elif method.name == "onchain":
                     if settings.mint_zcash_max_amount is not None:
                         mint_setting.max_amount = settings.mint_zcash_max_amount
                     if settings.mint_zcash_min_amount is not None:
@@ -108,7 +108,7 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                     if settings.mint_max_melt_bolt11_sat:
                         melt_setting.max_amount = settings.mint_max_melt_bolt11_sat
                         melt_setting.min_amount = 0
-                elif method.name == "zcash":
+                elif method.name == "onchain":
                     if settings.mint_zcash_max_amount is not None:
                         melt_setting.max_amount = settings.mint_zcash_max_amount
                     if settings.mint_zcash_min_amount is not None:
