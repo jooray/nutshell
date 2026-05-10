@@ -83,20 +83,32 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
         for method, unit_dict in self.backends.items():
             for unit in unit_dict.keys():
                 mint_setting = MintMethodSetting(method=method.name, unit=unit.name)
-                if settings.mint_max_mint_bolt11_sat:
-                    mint_setting.max_amount = settings.mint_max_mint_bolt11_sat
-                    mint_setting.min_amount = 0
-                mint_setting.options = MintMethodBolt11OptionSetting(
-                    description=unit_dict[unit].supports_description
-                )
+                if method.name == _BOLT11:
+                    if settings.mint_max_mint_bolt11_sat:
+                        mint_setting.max_amount = settings.mint_max_mint_bolt11_sat
+                        mint_setting.min_amount = 0
+                    mint_setting.options = MintMethodBolt11OptionSetting(
+                        description=unit_dict[unit].supports_description
+                    )
+                elif method.name == "zcash":
+                    if settings.mint_zcash_max_amount is not None:
+                        mint_setting.max_amount = settings.mint_zcash_max_amount
+                    if settings.mint_zcash_min_amount is not None:
+                        mint_setting.min_amount = settings.mint_zcash_min_amount
                 mint_method_settings.append(mint_setting)
         melt_method_settings: List[MeltMethodSetting] = []
         for method, unit_dict in self.backends.items():
             for unit in unit_dict.keys():
                 melt_setting = MeltMethodSetting(method=method.name, unit=unit.name)
-                if settings.mint_max_melt_bolt11_sat:
-                    melt_setting.max_amount = settings.mint_max_melt_bolt11_sat
-                    melt_setting.min_amount = 0
+                if method.name == _BOLT11:
+                    if settings.mint_max_melt_bolt11_sat:
+                        melt_setting.max_amount = settings.mint_max_melt_bolt11_sat
+                        melt_setting.min_amount = 0
+                elif method.name == "zcash":
+                    if settings.mint_zcash_max_amount is not None:
+                        melt_setting.max_amount = settings.mint_zcash_max_amount
+                    if settings.mint_zcash_min_amount is not None:
+                        melt_setting.min_amount = settings.mint_zcash_min_amount
                 melt_method_settings.append(melt_setting)
 
         mint_features: Dict[int, Union[List[Any], Dict[str, Any]]] = {

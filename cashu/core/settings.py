@@ -391,6 +391,8 @@ class ZcashSettings(MintSettings):
     )
     mint_zcash_mint_fee_percent: float = Field(default=0.0, ge=0.0)
     mint_zcash_melt_fee_percent: float = Field(default=0.0, ge=0.0)
+    mint_zcash_min_amount: Optional[int] = Field(default=None)
+    mint_zcash_max_amount: Optional[int] = Field(default=None)
 
 
 class Settings(
