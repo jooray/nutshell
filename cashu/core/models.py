@@ -35,7 +35,10 @@ class MintMethodSetting(BaseModel):
     unit: str
     min_amount: Optional[int] = None
     max_amount: Optional[int] = None
-    options: Optional[MintMethodBolt11OptionSetting] = None
+    # method-specific options blob; shape per method:
+    #   bolt11 → {"description": bool}
+    #   zcash  → {"confirmations": int}   # mirrors NUT-XX (PR #365)
+    options: Optional[Dict[str, Any]] = None
 
 
 class MeltMethodSetting(BaseModel):

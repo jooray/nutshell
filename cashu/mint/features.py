@@ -89,12 +89,16 @@ class LedgerFeatures(SupportsBackends, SupportsPubkey):
                         mint_setting.min_amount = 0
                     mint_setting.options = MintMethodBolt11OptionSetting(
                         description=unit_dict[unit].supports_description
-                    )
+                    ).model_dump(exclude_none=True)
                 elif method.name == "zcash":
                     if settings.mint_zcash_max_amount is not None:
                         mint_setting.max_amount = settings.mint_zcash_max_amount
                     if settings.mint_zcash_min_amount is not None:
                         mint_setting.min_amount = settings.mint_zcash_min_amount
+                    # NUT-XX (cashubtc/nuts#365) onchain settings.options.confirmations
+                    mint_setting.options = {
+                        "confirmations": settings.mint_zcash_min_confirmations,
+                    }
                 mint_method_settings.append(mint_setting)
         melt_method_settings: List[MeltMethodSetting] = []
         for method, unit_dict in self.backends.items():
