@@ -207,7 +207,8 @@ async def test_create_invoice_sat_passthrough(units_backend):
 
 @pytest.mark.asyncio
 async def test_create_invoice_fiat(units_backend):
-    """Fiat invoices query unitsd for conversion, then create sat invoice."""
+    """Fiat invoices query unitsd for conversion and create a sat invoice, but
+    DEFER the hedging callback until the invoice is paid (it is only cached)."""
     units_backend._fiat_units = {Unit.usd}
     units_backend.supported_units = {Unit.sat, Unit.usd}
 
@@ -220,10 +221,6 @@ async def test_create_invoice_fiat(units_backend):
                 "btc_price": 70965.0,
                 "fee_percent": 1.0,
             },
-            "/api/v1/callback/mint": {
-                "status": "ok",
-                "message": "Mint callback processed",
-            },
         }
     )
 
@@ -233,18 +230,70 @@ async def test_create_invoice_fiat(units_backend):
     assert resp.ok
     assert resp.checking_id == "test_checking_id_123"
 
-    # Verify unitsd was called with correct parameters
+    # Only the mint quote is fetched at creation time; NO callback yet.
     calls = units_backend._call_unitsd.call_args_list
-    # First call: mint quote
+    assert len(calls) == 1
     assert calls[0].args[0] == "/api/v1/quote/mint"
     assert calls[0].kwargs["params"] == {"amount": 100, "unit": "usd"}
-    # Second call: mint callback
-    assert calls[1].args[0] == "/api/v1/callback/mint"
-    callback_json = calls[1].kwargs["json"]
+
+    # The conversion details are cached, keyed by checking_id, for the callback
+    # that fires once the invoice is observed as paid.
+    pending = units_backend._pending_mints["test_checking_id_123"]
+    assert pending["unit"] == "usd"
+    assert pending["amount"] == 100
+    assert pending["msat_amount"] == 1_423_237
+    assert pending["btc_price"] == 70965.0
+
+
+@pytest.mark.asyncio
+async def test_mint_callback_fires_once_on_settlement(units_backend):
+    """The mint hedging callback is sent when the deposit invoice settles, and
+    only once even if settlement is observed multiple times."""
+    units_backend._fiat_units = {Unit.usd}
+    units_backend.supported_units = {Unit.sat, Unit.usd}
+
+    units_backend._call_unitsd = make_unitsd_mock(
+        {
+            "/api/v1/quote/mint": {
+                "amount_fiat": 101,
+                "amount_msat": 1_423_237,
+                "unit": "usd",
+                "btc_price": 70965.0,
+                "fee_percent": 1.0,
+            },
+            "/api/v1/callback/mint": {"status": "ok"},
+        }
+    )
+
+    amount = Amount(Unit.usd, 100)
+    await units_backend.create_invoice(amount, memo="test fiat")
+
+    # First settlement observation: callback fires.
+    status = await units_backend.get_invoice_status("test_checking_id_123")
+    assert status.result == PaymentResult.SETTLED
+
+    callback_calls = [
+        c
+        for c in units_backend._call_unitsd.call_args_list
+        if c.args[0] == "/api/v1/callback/mint"
+    ]
+    assert len(callback_calls) == 1
+    callback_json = callback_calls[0].kwargs["json"]
+    assert callback_json["quote_id"] == "test_checking_id_123"
     assert callback_json["unit"] == "usd"
     assert callback_json["amount"] == 100
     assert callback_json["msat_amount"] == 1_423_237
     assert callback_json["btc_price"] == 70965.0
+
+    # Second observation (e.g. poller + stream): no duplicate callback.
+    await units_backend.get_invoice_status("test_checking_id_123")
+    callback_calls = [
+        c
+        for c in units_backend._call_unitsd.call_args_list
+        if c.args[0] == "/api/v1/callback/mint"
+    ]
+    assert len(callback_calls) == 1
+    assert "test_checking_id_123" not in units_backend._pending_mints
 
 
 @pytest.mark.asyncio
