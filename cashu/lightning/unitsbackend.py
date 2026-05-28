@@ -59,6 +59,12 @@ class UnitsBackend(LightningBackend):
         self._fiat_units: set[Unit] = set()
         self.supported_units = self.backend.supported_units.copy()
 
+        # ─── Pending mint hedging callbacks ──────────────────────────────
+        # Maps a deposit invoice's checking_id -> conversion details captured at
+        # create_invoice time. The hedging callback is deferred until the invoice
+        # is actually paid (see _maybe_send_mint_callback), not sent at quote time.
+        self._pending_mints: Dict[str, dict] = {}
+
     # ────────────────────────── Unitsd Unit Discovery ──────────────────────────
 
     async def fetch_units_from_unitsd(self) -> List[dict]:
@@ -158,25 +164,19 @@ class UnitsBackend(LightningBackend):
                     **kwargs,
                 )
 
-                # Send mint callback to unitsd if invoice was created successfully
-                if resp.ok:
-                    try:
-                        await self._call_unitsd(
-                            "/api/v1/callback/mint",
-                            json={
-                                "quote_id": resp.checking_id or "",
-                                "unit": amount.unit.name,
-                                "amount": amount.amount,
-                                "msat_amount": msats,
-                                "btc_price": btc_price,
-                            },
-                        )
-                        logger.info(
-                            f"Sent mint callback to unitsd: {amount.amount} {amount.unit.name}"
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to send mint callback to unitsd: {e}")
-                        # Don't fail the invoice if callback fails
+                # Defer the hedging callback until the invoice is actually paid.
+                # Recording a position here (at quote/invoice-creation time) would
+                # hedge against mints that may never happen. Cache the conversion
+                # details keyed by checking_id; the callback is sent from
+                # get_invoice_status / paid_invoices_stream once the wrapped backend
+                # reports the invoice settled (see _maybe_send_mint_callback).
+                if resp.ok and resp.checking_id:
+                    self._pending_mints[resp.checking_id] = {
+                        "unit": amount.unit.name,
+                        "amount": amount.amount,
+                        "msat_amount": msats,
+                        "btc_price": btc_price,
+                    }
 
                 return resp
             except RuntimeError as e:
@@ -307,14 +307,56 @@ class UnitsBackend(LightningBackend):
 
         return resp
 
+    async def _maybe_send_mint_callback(self, checking_id: str) -> None:
+        """Send the mint hedging callback exactly once, when the deposit invoice
+        is settled.
+
+        Metadata was cached at create_invoice time and is popped here, so a
+        payment observed by both the poller (get_invoice_status) and the
+        invoice-listener stream only fires one callback. unitsd also dedups on
+        quote_id as a backstop.
+
+        Non-fiat (sat) invoices were never cached, so this is a no-op for them.
+
+        NOTE: the cache is in-memory, so a mint restart between quote creation
+        and payment drops the pending entry and the callback for that mint is
+        skipped. That under-counts the mint position (conservative), versus the
+        previous behaviour of over-counting by firing at quote time.
+        """
+        info = self._pending_mints.pop(checking_id, None)
+        if not info:
+            return
+        try:
+            await self._call_unitsd(
+                "/api/v1/callback/mint",
+                json={
+                    "quote_id": checking_id,
+                    "unit": info["unit"],
+                    "amount": info["amount"],
+                    "msat_amount": info["msat_amount"],
+                    "btc_price": info["btc_price"],
+                },
+            )
+            logger.info(
+                f"Sent mint callback to unitsd: {info['amount']} {info['unit']}"
+            )
+        except Exception as e:
+            # Re-cache so a later poll/stream observation can retry the callback.
+            self._pending_mints[checking_id] = info
+            logger.error(f"Failed to send mint callback to unitsd: {e}")
+
     async def get_invoice_status(self, checking_id: str) -> PaymentStatus:
-        return await self.backend.get_invoice_status(checking_id)
+        status = await self.backend.get_invoice_status(checking_id)
+        if status.settled:
+            await self._maybe_send_mint_callback(checking_id)
+        return status
 
     async def get_payment_status(self, checking_id: str) -> PaymentStatus:
         return await self.backend.get_payment_status(checking_id)
 
     async def paid_invoices_stream(self) -> AsyncGenerator[str, None]:
         async for p in self.backend.paid_invoices_stream():
+            await self._maybe_send_mint_callback(p)
             yield p
 
     async def get_payment_quote(
