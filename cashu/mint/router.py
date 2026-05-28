@@ -16,6 +16,9 @@ from ..core.models import (
     PostMeltQuoteRequest,
     PostMeltQuoteResponse,
     PostMeltRequest,
+    PostMintBatchRequest,
+    PostMintBatchResponse,
+    PostMintQuoteCheckRequest,
     PostMintQuoteRequest,
     PostMintQuoteResponse,
     PostMintRequest,
@@ -209,6 +212,53 @@ async def get_mint_quote(request: Request, quote: str) -> PostMintQuoteResponse:
     return resp
 
 
+@router.post(
+    "/v1/mint/quote/bolt11/check",
+    name="Batch check mint quotes",
+    summary="Batch check mint quotes",
+    response_model=list[PostMintQuoteResponse],
+    response_description="A list of mint quotes",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def mint_quote_check(
+    request: Request, payload: PostMintQuoteCheckRequest
+) -> list[PostMintQuoteResponse]:
+    logger.trace(f"> POST /v1/mint/quote/bolt11/check: payload={payload}")
+    quotes = await ledger.mint_quote_check(payload)
+    resp = [
+        PostMintQuoteResponse(
+            quote=quote.quote,
+            request=quote.request,
+            amount=quote.amount,
+            unit=quote.unit,
+            state=quote.state.value,
+            expiry=quote.expiry,
+            pubkey=quote.pubkey,
+        )
+        for quote in quotes
+    ]
+    logger.trace(f"< POST /v1/mint/quote/bolt11/check: {resp}")
+    return resp
+
+
+@router.post(
+    "/v1/mint/bolt11/batch",
+    name="Batch mint tokens",
+    summary="Batch mint tokens",
+    response_model=PostMintBatchResponse,
+    response_description="A list of blinded signatures that can be used to create proofs.",
+)
+@limiter.limit(f"{settings.mint_transaction_rate_limit_per_minute}/minute")
+async def mint_batch(
+    request: Request, payload: PostMintBatchRequest
+) -> PostMintBatchResponse:
+    logger.trace(f"> POST /v1/mint/bolt11/batch: payload={payload}")
+    signatures = await ledger.mint_batch(payload)
+    resp = PostMintBatchResponse(signatures=signatures)
+    logger.trace(f"< POST /v1/mint/bolt11/batch: {resp}")
+    return resp
+
+
 @router.websocket("/v1/ws", name="Websocket endpoint for subscriptions")
 async def websocket_endpoint(websocket: WebSocket):
     limit_websocket(websocket)
@@ -333,9 +383,14 @@ async def melt(request: Request, payload: PostMeltRequest) -> PostMeltQuoteRespo
     Requests tokens to be destroyed and sent out via Lightning.
     """
     logger.trace(f"> POST /v1/melt/bolt11: {payload}")
-    resp = await ledger.melt(
-        proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
-    )
+    if payload.prefer_async:
+        resp = await ledger.async_melt(
+            proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
+        )
+    else:
+        resp = await ledger.melt(
+            proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
+        )
     logger.trace(f"< POST /v1/melt/bolt11: {resp}")
     return resp
 
