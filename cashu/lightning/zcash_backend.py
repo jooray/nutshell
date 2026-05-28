@@ -156,6 +156,9 @@ class ZcashBackend(LightningBackend):
                     "to_address": quote.request,
                     "amount": quote.amount,
                     "memo": f"cashu melt {quote.quote}",
+                    # Dedup key: a retried melt for the same quote must not
+                    # broadcast a second onchain send (double-spend).
+                    "idempotency_key": quote.quote,
                 },
                 timeout=300.0,
             )
