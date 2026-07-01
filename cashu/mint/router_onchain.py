@@ -1,11 +1,11 @@
-"""NUT-XX (cashubtc/nuts#365) onchain payment-method router.
+"""NUT-30 onchain payment-method router.
 
-Endpoints follow the unmerged onchain NUT spec verbatim, mounted under
-`/v1/*/onchain`. The (`onchain`, `zec`) method-unit pair signals native
-Zcash. (For native BTC the same endpoints would be exposed against
-(`onchain`, `sat`).)
+Endpoints follow NUT-30 "Payment Method: Onchain" (cashubtc/nuts#365, merged
+2026-05-20) verbatim, mounted under `/v1/*/onchain`. The (`onchain`, `zec`)
+method-unit pair signals native Zcash. (For native BTC the same endpoints
+would be exposed against (`onchain`, `sat`).)
 
-Behavioural deviations from NUT-XX still in place (tracked in
+Behavioural deviations from NUT-30 still in place (tracked in
 `ZCASH-CDK-COMPATIBILITY.md` §6):
 
 * one deposit per quote (no multi-deposit address reuse)
@@ -24,12 +24,11 @@ from loguru import logger
 
 from ..core.base import (
     Amount,
-    Method,
+    MeltQuoteState,
     MintQuote,
     MintQuoteState,
-    Unit,
 )
-from ..core.crypto.keys import random_hash
+from ..core.crypto.keys import generate_uuid_v7
 from ..core.errors import CashuError
 from ..core.models import (
     OnchainFeeOption,
@@ -51,13 +50,27 @@ router = APIRouter()
 
 ONCHAIN_METHOD = "onchain"
 
+# The single fee option we always return uses index 0. NUT-30 lets a mint
+# advertise several fee/priority tiers; Zcash has a near-flat fee market
+# (ZIP-317 conventional fee ~10000 zat) and a 75-second block target, so a
+# single tier is the honest representation.
+_ONLY_FEE_INDEX = 0
+
+
 # Zcash has a near-flat fee market (ZIP-317 conventional fee ~10000 zat) and
 # a 75-second block target. We only ever return a single fee option; the field
-# exists in NUT-XX so wallets can offer per-priority quotes on chains where
+# exists in NUT-30 so wallets can offer per-priority quotes on chains where
 # that matters (BTC). For Zcash, `estimated_blocks` is just the configured
 # minimum confirmation depth.
 def _zec_estimated_blocks() -> int:
     return settings.mint_zcash_min_confirmations
+
+
+def _selected_fee_index(quote) -> int | None:
+    """NUT-30 `selected_fee_index`: null until the quote is executed, then the
+    index of the chosen fee option. We expose a single option (index 0), so the
+    selection is that index once the quote leaves the UNPAID state."""
+    return _ONLY_FEE_INDEX if quote.state != MeltQuoteState.unpaid else None
 
 
 def _build_mint_quote_response(
@@ -88,7 +101,7 @@ def _build_mint_quote_response(
 async def onchain_mint_quote(
     request: Request, payload: PostMintQuoteOnchainRequest
 ) -> PostMintQuoteOnchainResponse:
-    """NUT-XX mint quote: allocate a deposit address. No `amount` in the
+    """NUT-30 mint quote: allocate a deposit address. No `amount` in the
     request — the wallet decides how much to send, and `amount_paid` /
     `amount_issued` track the running totals."""
     logger.trace(f"> POST /v1/mint/quote/onchain: payload={payload}")
@@ -107,7 +120,7 @@ async def onchain_mint_quote(
     expiry = int(time.time()) + settings.mint_zcash_quote_expiry
 
     quote = MintQuote(
-        quote=random_hash(),
+        quote=generate_uuid_v7(),
         method=method.name,  # "onchain"
         request=invoice_response.payment_request,
         checking_id=invoice_response.checking_id,
@@ -201,11 +214,11 @@ async def onchain_mint(
     request: Request,
     payload: PostMintRequest,
 ) -> PostMintResponse:
-    """NUT-XX mint. The wallet's `outputs` MUST sum to no more than
+    """NUT-30 mint. The wallet's `outputs` MUST sum to no more than
     (`amount_paid` - `amount_issued`); today that means the full deposit, since
     we don't yet support partial mints (see file docstring).
 
-    NUT-20 `signature` is required by NUT-XX and enforced by the underlying
+    NUT-20 `signature` is required by NUT-30 and enforced by the underlying
     `ledger.mint()` based on the quote's `pubkey`."""
     logger.trace(f"> POST /v1/mint/onchain: {payload}")
     promises = await ledger.mint(
@@ -220,7 +233,11 @@ async def onchain_mint(
 
 
 def _build_melt_quote_response(
-    quote, fee_options: List[OnchainFeeOption], outpoint=None, selected=None
+    quote,
+    fee_options: List[OnchainFeeOption],
+    outpoint=None,
+    selected_fee_index=None,
+    change=None,
 ) -> PostMeltQuoteOnchainResponse:
     return PostMeltQuoteOnchainResponse(
         quote=quote.quote,
@@ -230,14 +247,16 @@ def _build_melt_quote_response(
         expiry=quote.expiry,
         request=quote.request,
         fee_options=fee_options,
-        selected_estimated_blocks=selected,
+        selected_fee_index=selected_fee_index,
         outpoint=outpoint,
+        change=change,
     )
 
 
 def _melt_fee_options(quote_fee_reserve: int) -> List[OnchainFeeOption]:
     return [
         OnchainFeeOption(
+            fee_index=_ONLY_FEE_INDEX,
             fee_reserve=quote_fee_reserve,
             estimated_blocks=_zec_estimated_blocks(),
         )
@@ -245,7 +264,7 @@ def _melt_fee_options(quote_fee_reserve: int) -> List[OnchainFeeOption]:
 
 
 def _outpoint_for(quote) -> str | None:
-    """Return the NUT-XX `outpoint` for a settled melt.
+    """Return the NUT-30 `outpoint` for a settled melt.
 
     For transparent Zcash this would be `txid:vout`; we don't currently track
     `vout` so we surface the bare txid. For shielded outputs (sapling/orchard)
@@ -266,7 +285,7 @@ def _outpoint_for(quote) -> str | None:
 async def onchain_melt_quote(
     request: Request, payload: PostMeltQuoteOnchainRequest
 ) -> PostMeltQuoteOnchainResponse:
-    """NUT-XX melt quote. `request` is an onchain address; `amount` is required
+    """NUT-30 melt quote. `request` is an onchain address; `amount` is required
     because addresses do not encode amounts."""
     logger.trace(f"> POST /v1/melt/quote/onchain: {payload}")
 
@@ -284,7 +303,7 @@ async def onchain_melt_quote(
         quote=quote,
         fee_options=_melt_fee_options(quote.fee_reserve),
         outpoint=_outpoint_for(quote),
-        selected=None,
+        selected_fee_index=_selected_fee_index(quote),
     )
     logger.trace(f"< POST /v1/melt/quote/onchain: {resp}")
     return resp
@@ -307,7 +326,7 @@ async def onchain_get_melt_quote(
         quote=melt_quote,
         fee_options=_melt_fee_options(melt_quote.fee_reserve),
         outpoint=_outpoint_for(melt_quote),
-        selected=_zec_estimated_blocks() if melt_quote.payment_preimage else None,
+        selected_fee_index=_selected_fee_index(melt_quote),
     )
     logger.trace(f"< GET /v1/melt/quote/onchain/{quote}: {resp}")
     return resp
@@ -327,8 +346,9 @@ async def onchain_get_melt_quote(
 async def onchain_melt(
     request: Request, payload: PostMeltOnchainRequest
 ) -> PostMeltQuoteOnchainResponse:
-    """NUT-XX melt. The wallet's `estimated_blocks` MUST match one of the
-    `fee_options[].estimated_blocks` returned in the quote."""
+    """NUT-30 melt. The wallet's `fee_index` MUST match one of the
+    `fee_options[].fee_index` returned in the quote. Optional `outputs` receive
+    NUT-08 change for any unclaimed onchain fee reserve."""
     logger.trace(f"> POST /v1/melt/onchain: {payload}")
 
     # Look up the quote first so we can validate the wallet's selected fee tier
@@ -337,29 +357,31 @@ async def onchain_melt(
     if melt_quote.method != ONCHAIN_METHOD:
         raise HTTPException(status_code=400, detail="not an onchain quote")
 
-    valid_estimated_blocks = {
-        opt.estimated_blocks for opt in _melt_fee_options(melt_quote.fee_reserve)
+    valid_fee_indexes = {
+        opt.fee_index for opt in _melt_fee_options(melt_quote.fee_reserve)
     }
-    if payload.estimated_blocks not in valid_estimated_blocks:
+    if payload.fee_index not in valid_fee_indexes:
         raise CashuError(
             detail=(
-                f"estimated_blocks={payload.estimated_blocks} is not in the quote's "
-                f"fee_options ({sorted(valid_estimated_blocks)})"
+                f"fee_index={payload.fee_index} is not in the quote's "
+                f"fee_options ({sorted(valid_fee_indexes)})"
             ),
             code=2000,
         )
 
-    melt_quote_after = await ledger.melt(
+    # ledger.melt returns a PostMeltQuoteResponse carrying any NUT-08 `change`
+    # blind signatures for overpaid fee reserve (when `outputs` were supplied).
+    melt_response = await ledger.melt(
         proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
     )
-    # ledger.melt returns a PostMeltQuoteResponse; we re-fetch the underlying
-    # MeltQuote for the NUT-XX shape (we need state + payment_preimage).
+    # Re-fetch the underlying MeltQuote for the NUT-30 shape (state + txid).
     melt_quote = await ledger.get_melt_quote(payload.quote)
     resp = _build_melt_quote_response(
         quote=melt_quote,
         fee_options=_melt_fee_options(melt_quote.fee_reserve),
         outpoint=_outpoint_for(melt_quote),
-        selected=payload.estimated_blocks,
+        selected_fee_index=payload.fee_index,
+        change=melt_response.change,
     )
     logger.trace(f"< POST /v1/melt/onchain: {resp}")
     return resp
