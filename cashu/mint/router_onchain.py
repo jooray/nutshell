@@ -327,6 +327,7 @@ async def onchain_get_melt_quote(
         fee_options=_melt_fee_options(melt_quote.fee_reserve),
         outpoint=_outpoint_for(melt_quote),
         selected_fee_index=_selected_fee_index(melt_quote),
+        change=melt_quote.change,
     )
     logger.trace(f"< GET /v1/melt/quote/onchain/{quote}: {resp}")
     return resp
@@ -369,19 +370,23 @@ async def onchain_melt(
             code=2000,
         )
 
-    # ledger.melt returns a PostMeltQuoteResponse carrying any NUT-08 `change`
-    # blind signatures for overpaid fee reserve (when `outputs` were supplied).
-    melt_response = await ledger.melt(
+    # Onchain melts are always asynchronous (NUT-30): ledger.melt() broadcasts
+    # and returns PENDING before any NUT-08 change is computed, so the change is
+    # NOT on this response. It lands on the MeltQuote once the send settles and
+    # is surfaced by the GET polling endpoint below. (For the rare synchronous
+    # settle, the re-fetched quote carries it too.)
+    await ledger.melt(
         proofs=payload.inputs, quote=payload.quote, outputs=payload.outputs
     )
-    # Re-fetch the underlying MeltQuote for the NUT-30 shape (state + txid).
+    # Re-fetch the underlying MeltQuote for the NUT-30 shape (state, txid,
+    # and any NUT-08 change loaded from the persisted signed promises).
     melt_quote = await ledger.get_melt_quote(payload.quote)
     resp = _build_melt_quote_response(
         quote=melt_quote,
         fee_options=_melt_fee_options(melt_quote.fee_reserve),
         outpoint=_outpoint_for(melt_quote),
         selected_fee_index=payload.fee_index,
-        change=melt_response.change,
+        change=melt_quote.change,
     )
     logger.trace(f"< POST /v1/melt/onchain: {resp}")
     return resp

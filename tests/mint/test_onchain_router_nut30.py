@@ -129,3 +129,61 @@ def test_fee_option_serialization_shape():
         "fee_reserve": 10000,
         "estimated_blocks": 2,
     }
+
+
+# ------------------------------------------------------------------
+# Handlers surface NUT-08 change on a settled melt
+#
+# Onchain melts are always async: the change is computed when the send
+# settles and is only observable via the check-quote endpoint. These tests
+# drive the handlers with a mocked ledger to assert the response actually
+# threads `change` through — the regression that motivated this file.
+# ------------------------------------------------------------------
+
+
+_CHANGE = [
+    BlindedSignature(
+        id="009a1f293253e41e",
+        amount=1000,
+        C_="03c668f551855ddc792e22ea61d32ddfa6a45b1eb659ce66e915bf5127a8657be0",
+    )
+]
+
+
+def _settled_quote_with_change() -> MeltQuote:
+    quote = _melt_quote(MeltQuoteState.paid)
+    quote.change = _CHANGE
+    quote.payment_preimage = "melt_tx_456"  # surfaced as `outpoint`
+    return quote
+
+
+@pytest.mark.asyncio
+async def test_get_melt_quote_surfaces_change(monkeypatch):
+    async def fake_get_melt_quote(quote_id, *a, **k):
+        return _settled_quote_with_change()
+
+    monkeypatch.setattr(router_onchain.ledger, "get_melt_quote", fake_get_melt_quote)
+
+    resp = await router_onchain.onchain_get_melt_quote.__wrapped__(
+        request=None, quote="melt-quote-id"
+    )
+    assert resp.change == _CHANGE
+    assert resp.outpoint == "melt_tx_456"
+    assert resp.selected_fee_index == 0
+
+
+@pytest.mark.asyncio
+async def test_melt_surfaces_change_from_refetched_quote(monkeypatch):
+    async def fake_melt(*a, **k):
+        return None  # handler ignores the return value
+
+    async def fake_get_melt_quote(quote_id, *a, **k):
+        return _settled_quote_with_change()
+
+    monkeypatch.setattr(router_onchain.ledger, "melt", fake_melt)
+    monkeypatch.setattr(router_onchain.ledger, "get_melt_quote", fake_get_melt_quote)
+
+    payload = PostMeltOnchainRequest(quote="melt-quote-id", fee_index=0, inputs=[])
+    resp = await router_onchain.onchain_melt.__wrapped__(request=None, payload=payload)
+    assert resp.change == _CHANGE
+    assert resp.selected_fee_index == 0
